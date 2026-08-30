@@ -1,1 +1,1 @@
-# soc-assistt-dashboard
+# soc-assistant-dashboard
