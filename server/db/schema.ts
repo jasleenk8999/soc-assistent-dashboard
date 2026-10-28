@@ -73,6 +73,11 @@ export const logs = pgTable(
     sourceHost: varchar("source_host", { length: 100 }),
     sourceIp: varchar("source_ip", { length: 45 }),
     destinationIp: varchar("destination_ip", { length: 45 }),
+    sourcePort: integer("source_port"),
+    destinationPort: integer("destination_port"),
+    protocol: varchar("protocol", { length: 20 }),
+    username: varchar("username", { length: 100 }),
+    eventCategory: varchar("event_category", { length: 100 }),
     eventId: varchar("event_id", { length: 50 }),
     logLevel: varchar("log_level", { length: 20 }).notNull().default("INFO"),
     rawLog: text("raw_log").notNull(),
@@ -84,6 +89,8 @@ export const logs = pgTable(
   (table) => [
     index("logs_timestamp_idx").on(table.timestamp),
     index("logs_source_ip_idx").on(table.sourceIp),
+    index("logs_source_type_idx").on(table.sourceType),
+    index("logs_username_idx").on(table.username),
     index("logs_is_threat_idx").on(table.isThreat),
   ]
 );
@@ -95,16 +102,22 @@ export const alerts = pgTable(
   "alerts",
   {
     id: serial("id").primaryKey(),
+    ruleId: varchar("rule_id", { length: 100 }),
+    ruleName: varchar("rule_name", { length: 255 }),
     severity: varchar("severity", { length: 20 }).notNull(), // Critical, High, Medium, Low
     title: varchar("title", { length: 255 }).notNull(),
     source: varchar("source", { length: 255 }).notNull(),
-    tactic: varchar("tactic", { length: 50 }).notNull(), // MITRE Tactic ID (e.g. TA0006)
-    technique: varchar("technique", { length: 50 }), // MITRE Technique ID (e.g. T1110)
-    status: varchar("status", { length: 50 }).notNull().default("Open"), // Open, In review, Escalated, Resolved
+    destination: varchar("destination", { length: 255 }),
+    tactic: varchar("tactic", { length: 100 }).notNull(), // MITRE Tactic ID (e.g. TA0006)
+    technique: varchar("technique", { length: 150 }), // MITRE Technique ID (e.g. T1110)
+    status: varchar("status", { length: 50 }).notNull().default("Open"), // Open, In review, Escalated, Resolved, Contained
     detectionMethod: varchar("detection_method", { length: 100 }).notNull().default("Rule-based"),
     confidence: numeric("confidence", { precision: 5, scale: 2 }).notNull().default("90.00"),
     description: text("description"),
     evidence: jsonb("evidence").default({}),
+    suggestedNextSteps: text("suggested_next_steps"),
+    relatedLogIds: jsonb("related_log_ids").default([]),
+    dedupKey: varchar("dedup_key", { length: 255 }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -112,6 +125,8 @@ export const alerts = pgTable(
     index("alerts_severity_idx").on(table.severity),
     index("alerts_status_idx").on(table.status),
     index("alerts_created_at_idx").on(table.createdAt),
+    index("alerts_rule_id_idx").on(table.ruleId),
+    index("alerts_dedup_key_idx").on(table.dedupKey),
   ]
 );
 

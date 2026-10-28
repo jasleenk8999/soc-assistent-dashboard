@@ -15,6 +15,20 @@
       "when": 1793163956190,
       "tag": "0001_round_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793166621950,
+      "tag": "0002_chunky_diamondback",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793168135123,
+      "tag": "0003_cute_hellcat",
+      "breakpoints": true
     }
   ]
 }

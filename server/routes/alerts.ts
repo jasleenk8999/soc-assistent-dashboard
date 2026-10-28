@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, ilike, or } from "drizzle-orm";
+import { and, desc, eq, ilike, or, inArray } from "drizzle-orm";
 import { db } from "../db/index";
-import { alerts } from "../db/schema";
+import { alerts, logs } from "../db/schema";
 import { requireAuth, requirePermission, optionalAuth } from "../middleware/authMiddleware";
 import { PERMISSIONS } from "../../shared/auth";
 
@@ -32,7 +32,10 @@ alertsRouter.get("/", optionalAuth, async (req: Request, res: Response) => {
         or(
           ilike(alerts.title, term),
           ilike(alerts.source, term),
-          ilike(alerts.tactic, term)
+          ilike(alerts.tactic, term),
+          ilike(alerts.technique, term),
+          ilike(alerts.ruleId, term),
+          ilike(alerts.ruleName, term)
         )
       );
     }
@@ -94,8 +97,45 @@ alertsRouter.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// PATCH /api/alerts/:id/status (Triage action - Requires Senior Analyst or Incident Commander)
-alertsRouter.patch("/:id/status", requireAuth, requirePermission(PERMISSIONS.UPDATE_ALERT_STATUS), async (req: Request, res: Response) => {
+// GET /api/alerts/:id/logs - Retrieve all originating logs linked to this alert
+alertsRouter.get("/:id/logs", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid alert ID format" });
+    }
+
+    const [alert] = await db.select().from(alerts).where(eq(alerts.id, id));
+    if (!alert) {
+      return res.status(404).json({ error: `Alert #${id} not found` });
+    }
+
+    const logIds: number[] = Array.isArray(alert.relatedLogIds) ? (alert.relatedLogIds as number[]) : [];
+    let originatingLogs: any[] = [];
+
+    if (logIds.length > 0) {
+      originatingLogs = await db
+        .select()
+        .from(logs)
+        .where(inArray(logs.id, logIds))
+        .orderBy(desc(logs.timestamp));
+    }
+
+    return res.json({
+      alertId: alert.id,
+      ruleId: alert.ruleId,
+      ruleName: alert.ruleName,
+      logsCount: originatingLogs.length,
+      logs: originatingLogs,
+    });
+  } catch (error: any) {
+    console.error("Get alert logs error:", error);
+    return res.status(500).json({ error: "Failed to fetch originating logs for alert" });
+  }
+});
+
+// Handler for alert status updates
+const updateAlertStatusHandler = async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
     const { status } = req.body;
@@ -122,4 +162,8 @@ alertsRouter.patch("/:id/status", requireAuth, requirePermission(PERMISSIONS.UPD
     console.error("Update alert status error:", error);
     return res.status(500).json({ error: "Failed to update alert status" });
   }
-});
+};
+
+// PATCH /api/alerts/:id and PATCH /api/alerts/:id/status (Requires UPDATE_ALERT_STATUS permission)
+alertsRouter.patch("/:id/status", requireAuth, requirePermission(PERMISSIONS.UPDATE_ALERT_STATUS), updateAlertStatusHandler);
+alertsRouter.patch("/:id", requireAuth, requirePermission(PERMISSIONS.UPDATE_ALERT_STATUS), updateAlertStatusHandler);

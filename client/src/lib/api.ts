@@ -41,9 +41,12 @@ export interface DashboardStats {
 
 export interface AlertItem {
   id: number;
+  ruleId?: string;
+  ruleName?: string;
   severity: "Critical" | "High" | "Medium" | "Low";
   title: string;
   source: string;
+  destination?: string;
   tactic: string;
   technique?: string;
   status: "Open" | "In review" | "Escalated" | "Resolved" | "Contained";
@@ -51,8 +54,69 @@ export interface AlertItem {
   confidence: string;
   description?: string;
   evidence?: any;
+  suggestedNextSteps?: string;
+  relatedLogIds?: number[];
+  dedupKey?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface LogItem {
+  id: number;
+  timestamp: string;
+  sourceType: string;
+  sourceHost?: string;
+  sourceIp?: string;
+  destinationIp?: string;
+  sourcePort?: number;
+  destinationPort?: number;
+  protocol?: string;
+  username?: string;
+  eventId?: string;
+  eventCategory?: string;
+  logLevel: string;
+  rawLog: string;
+  parsedFields: Record<string, any>;
+  isThreat: boolean;
+  threatReason?: string;
+  createdAt: string;
+}
+
+export interface LogsResponse {
+  items: LogItem[];
+  total: number;
+  sourceCounts: Record<string, number>;
+  pagination: {
+    limit: number;
+    offset: number;
+    page: number;
+    pages: number;
+  };
+}
+
+export interface IngestLogResponse {
+  success: boolean;
+  log: LogItem;
+  alertsGenerated: AlertItem[];
+  detectionMatchesCount: number;
+}
+
+export interface BulkIngestResponse {
+  success: boolean;
+  ingestedCount: number;
+  alertsGeneratedCount: number;
+  alerts: AlertItem[];
+}
+
+export interface LogUploadResponse {
+  success: boolean;
+  fileName: string;
+  fileSize: number;
+  totalParsedInFile: number;
+  logsIngested: number;
+  alertsGeneratedCount: number;
+  alerts: AlertItem[];
+  truncated?: boolean;
 }
 
 export interface AlertsResponse {
@@ -172,9 +236,12 @@ async function request<T>(endpoint: string, options?: RequestInit, isRetry = fal
   const url = endpoint.startsWith("/api") ? endpoint : `/api${endpoint}`;
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     ...(options?.headers as Record<string, string>),
   };
+
+  if (!(options?.body instanceof FormData)) {
+    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  }
 
   if (inMemoryAccessToken) {
     headers["Authorization"] = `Bearer ${inMemoryAccessToken}`;
@@ -287,11 +354,66 @@ export const api = {
 
   getAlertById: (id: number) => request<AlertItem>(`/api/alerts/${id}`),
 
+  getAlertLogs: (id: number) =>
+    request<{ alertId: number; ruleId: string; ruleName: string; logsCount: number; logs: LogItem[] }>(
+      `/api/alerts/${id}/logs`
+    ),
+
   updateAlertStatus: (id: number, status: string) =>
     request<{ success: boolean; alert: AlertItem }>(`/api/alerts/${id}/status`, {
       method: "PATCH",
       body: JSON.stringify({ status }),
     }),
+
+  // Logs & Ingestion (Phase 3)
+  getLogs: (params?: {
+    search?: string;
+    sourceType?: string;
+    logLevel?: string;
+    isThreat?: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.search) sp.set("search", params.search);
+    if (params?.sourceType && params.sourceType !== "All") sp.set("sourceType", params.sourceType);
+    if (params?.logLevel && params.logLevel !== "All") sp.set("logLevel", params.logLevel);
+    if (params?.isThreat && params.isThreat !== "All") sp.set("isThreat", params.isThreat);
+    if (params?.startDate) sp.set("startDate", params.startDate);
+    if (params?.endDate) sp.set("endDate", params.endDate);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.offset) sp.set("offset", String(params.offset));
+    const qs = sp.toString();
+    return request<LogsResponse>(`/api/logs${qs ? `?${qs}` : ""}`);
+  },
+
+  getLogById: (id: number) => request<{ log: LogItem; relatedAlerts: AlertItem[] }>(`/api/logs/${id}`),
+
+  ingestLog: (payload: any) =>
+    request<IngestLogResponse>("/api/logs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  ingestLogsBulk: (items: any[], defaultSourceType?: string) =>
+    request<BulkIngestResponse>("/api/logs/bulk", {
+      method: "POST",
+      body: JSON.stringify({ items, defaultSourceType }),
+    }),
+
+  uploadLogFile: (file: File, sourceType?: string) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (sourceType) {
+      formData.append("sourceType", sourceType);
+    }
+    return request<LogUploadResponse>("/api/logs/upload", {
+      method: "POST",
+      body: formData,
+    });
+  },
 
   // Cases / Investigations
   getCases: () => request<{ items: CaseItem[]; total: number; activeCount: number }>("/api/cases"),

@@ -11,6 +11,8 @@ import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContaine
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { LoginModal } from "@/components/LoginModal";
+import { LogIngestion } from "@/components/LogIngestion";
+import { AlertDetailModal } from "@/components/AlertDetailModal";
 import { ROLES, ROLE_PERMISSIONS, type UserRole } from "@shared/auth";
 import {
   api,
@@ -35,6 +37,7 @@ type Severity = "Critical" | "High" | "Medium" | "Low";
 const routes = {
   overview: "/",
   alerts: "/alerts",
+  logs: "/logs",
   investigation: "/investigation",
   network: "/network",
   malware: "/malware-lab",
@@ -46,7 +49,8 @@ const routes = {
 
 const commandNav = [
   { label: "Overview", href: routes.overview, icon: LayoutDashboard },
-  { label: "Live alerts", href: routes.alerts, icon: ShieldAlert, badge: "5" },
+  { label: "Live alerts", href: routes.alerts, icon: ShieldAlert, badge: "Live" },
+  { label: "Log Ingestion", href: routes.logs, icon: FileCode2, badge: "Live" },
   { label: "Investigation", href: routes.investigation, icon: Radar },
   { label: "Network", href: routes.network, icon: Network },
   { label: "Malware lab", href: routes.malware, icon: TerminalSquare },
@@ -540,6 +544,7 @@ function Alerts() {
   const [filter, setFilter] = useState<Severity | "All">("All");
   const [query, setQuery] = useState("");
   const [alertsList, setAlertsList] = useState<AlertItem[]>([]);
+  const [selectedAlertForDetail, setSelectedAlertForDetail] = useState<AlertItem | null>(null);
   const [counts, setCounts] = useState<{ all: number; critical: number; high: number; medium: number; low: number; open: number }>({
     all: 0,
     critical: 0,
@@ -649,7 +654,12 @@ function Alerts() {
           ) : (
             <div className="divide-y divide-white/[0.07]">
               {alertsList.map((item) => (
-                <AlertRow key={item.id} item={item} onStatusChange={fetchAlerts} />
+                <AlertRow
+                  key={item.id}
+                  item={item}
+                  onStatusChange={fetchAlerts}
+                  onInspect={(alert) => setSelectedAlertForDetail(alert)}
+                />
               ))}
               {!alertsList.length && (
                 <div className="p-12 text-center">
@@ -661,11 +671,29 @@ function Alerts() {
           )}
         </Panel>
       </div>
+
+      <AlertDetailModal
+        alert={selectedAlertForDetail}
+        isOpen={Boolean(selectedAlertForDetail)}
+        onClose={() => setSelectedAlertForDetail(null)}
+        onStatusUpdated={() => {
+          fetchAlerts();
+          setSelectedAlertForDetail(null);
+        }}
+      />
     </>
   );
 }
 
-function AlertRow({ item, onStatusChange }: { item: AlertItem; onStatusChange: () => void }) {
+function AlertRow({
+  item,
+  onStatusChange,
+  onInspect,
+}: {
+  item: AlertItem;
+  onStatusChange: () => void;
+  onInspect: (item: AlertItem) => void;
+}) {
   const [, setLocation] = useLocation();
 
   const handleEscalate = async () => {
@@ -690,15 +718,37 @@ function AlertRow({ item, onStatusChange }: { item: AlertItem; onStatusChange: (
           <SeverityTag severity={item.severity} />
           <span className="font-display text-[9px] uppercase tracking-[0.13em] text-slate-600">{item.tactic}</span>
           <span className="font-display text-[9px] uppercase tracking-[0.13em] text-slate-500">{item.status}</span>
+          {item.ruleId ? (
+            <span className="rounded bg-cyan-950/60 border border-cyan-500/40 px-1.5 py-0.5 text-[8.5px] font-mono text-cyan-300">
+              ⚡ {item.ruleId}
+            </span>
+          ) : (
+            <span className="rounded bg-slate-800/60 border border-slate-700/40 px-1.5 py-0.5 text-[8.5px] font-mono text-slate-400">
+              Demo Seed
+            </span>
+          )}
         </div>
-        <p className="mt-2 text-[13px] font-semibold text-slate-200">{item.title}</p>
-        <p className="mt-1 text-[10px] text-slate-500">{item.source}</p>
+        <p
+          onClick={() => onInspect(item)}
+          className="mt-2 text-[13px] font-semibold text-slate-200 hover:text-[#b7f960] cursor-pointer transition"
+        >
+          {item.title}
+        </p>
+        <p className="mt-1 text-[10px] text-slate-500 font-mono">
+          SRC: {item.source} {item.destination ? `➔ DST: ${item.destination}` : ""}
+        </p>
       </div>
       <div className="flex items-center justify-between gap-3">
         <span className="text-[10px] text-slate-500">
           {new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         </span>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => onInspect(item)}
+            className="rounded border border-[#b7f960]/30 bg-[#b7f960]/10 px-2 py-1 font-display text-[9px] font-semibold text-[#b7f960] hover:bg-[#b7f960]/20 flex items-center gap-1 transition"
+          >
+            <FileCode2 size={11} /> Evidence
+          </button>
           {item.status === "Open" && (
             <button
               onClick={handleEscalate}
@@ -715,6 +765,7 @@ function AlertRow({ item, onStatusChange }: { item: AlertItem; onStatusChange: (
     </div>
   );
 }
+
 
 // ===========================================================================
 // 3. INVESTIGATION SCREEN (Connected to PostgreSQL Backend)
@@ -1795,6 +1846,7 @@ function Home() {
 
   const renderScreen = () => {
     if (location === routes.alerts) return <Alerts />;
+    if (location === routes.logs) return <LogIngestion />;
     if (location === routes.investigation) return <Investigation />;
     if (location === routes.network) return <NetworkScreen />;
     if (location === routes.malware) return <MalwareLab />;
@@ -1945,7 +1997,7 @@ function NavGroup({
   onNavigate,
 }: {
   title: string;
-  items: typeof commandNav;
+  items: Array<{ label: string; href: string; icon: any; badge?: string }>;
   location: string;
   onNavigate: (to: string) => void;
 }) {
