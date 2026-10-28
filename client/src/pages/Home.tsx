@@ -15,6 +15,7 @@ import { LiveActivityFeed } from "@/components/LiveActivityFeed";
 import { LoginModal } from "@/components/LoginModal";
 import { LogIngestion } from "@/components/LogIngestion";
 import { AlertDetailModal } from "@/components/AlertDetailModal";
+import { ReportModal } from "@/components/ReportModal";
 import { ROLES, ROLE_PERMISSIONS, type UserRole } from "@shared/auth";
 import {
   api,
@@ -25,6 +26,7 @@ import {
   type NetworkFlowItem,
   type ReportItem,
   type ThreatIntelItem,
+  type ThreatIntelProvider,
 } from "@/lib/api";
 
 const ASSETS = {
@@ -553,44 +555,161 @@ function AlertQueue({ compact = false }: { compact?: boolean }) {
 }
 
 function AIBrief() {
+  const [, setLocation] = useLocation();
+  const { subscribe } = useRealtime();
+  const [loading, setLoading] = useState(true);
+  const [topAlert, setTopAlert] = useState<AlertItem | null>(null);
+  const [explanation, setExplanation] = useState<any | null>(null);
+
+  const loadBrief = async () => {
+    try {
+      setLoading(true);
+      const res = await api.getAlerts();
+      const alerts = res.items || [];
+      if (!alerts || alerts.length === 0) {
+        setTopAlert(null);
+        setExplanation(null);
+        return;
+      }
+      const priorityOrder: Record<string, number> = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 };
+      const sorted = [...alerts].sort((a, b) => {
+        const diff = (priorityOrder[b.severity] || 0) - (priorityOrder[a.severity] || 0);
+        if (diff !== 0) return diff;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+
+      // Find an alert that already has an explanation, or fall back to the highest severity alert
+      let alertWithExplanation: AlertItem | null = null;
+      let matchedExplanation: any = null;
+
+      for (const a of sorted.slice(0, 5)) {
+        try {
+          const expRes = await api.getAlertExplanation(a.id);
+          if (expRes.explanation) {
+            alertWithExplanation = a;
+            matchedExplanation = expRes.explanation;
+            break;
+          }
+        } catch {
+          // continue search
+        }
+      }
+
+      if (alertWithExplanation && matchedExplanation) {
+        setTopAlert(alertWithExplanation);
+        setExplanation(matchedExplanation);
+      } else {
+        setTopAlert(sorted[0]);
+        setExplanation(null);
+      }
+    } catch (err) {
+      console.error("Failed to load AI brief alert data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadBrief();
+    const unsubExp = subscribe("alert.explanation_updated", () => loadBrief());
+    const unsubAlert = subscribe("alert.created", () => loadBrief());
+    return () => {
+      unsubExp();
+      unsubAlert();
+    };
+  }, [subscribe]);
+
   return (
     <Panel className="relative min-h-[380px] overflow-hidden">
       <img src={ASSETS.brief} alt="Abstract AI cyber analysis artifact" className="absolute inset-0 h-full w-full object-cover opacity-[0.30] mix-blend-screen" />
       <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(22,28,31,0.98)_0%,rgba(22,28,31,0.88)_53%,rgba(22,28,31,0.52)_100%)]" />
       <div className="relative z-10 p-5 md:p-6">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#b7f960]/12 text-[#b7f960]">
-            <Bot size={16} />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#b7f960]/12 text-[#b7f960]">
+              <Bot size={16} />
+            </div>
+            <div>
+              <Meta>AI Brief</Meta>
+              <p className="font-display text-[11px] font-semibold text-slate-200">Incident narration</p>
+            </div>
           </div>
-          <div>
-            <Meta>AI Brief</Meta>
-            <p className="font-display text-[11px] font-semibold text-slate-200">Incident narration</p>
-          </div>
+          {explanation && (
+            <span className="rounded border border-[#b7f960]/30 bg-[#b7f960]/10 px-2 py-0.5 font-display text-[9px] font-semibold uppercase tracking-wider text-[#b7f960]">
+              {explanation.provider === "fallback" ? "Rule Grounded" : explanation.provider.toUpperCase()}
+            </span>
+          )}
         </div>
-        <div className="mt-8 border-l-2 border-[#b7f960] pl-4">
-          <p className="font-display text-[17px] font-semibold leading-snug tracking-[-0.02em] text-slate-100">
-            Credential attack was contained before lateral movement.
-          </p>
-          <p className="mt-3 text-[12px] leading-relaxed text-slate-400">
-            A rotating proxy IP attempted 100 failed VPN logins in 2 minutes. Conditional access blocked the source; no account was accessed.
-          </p>
-        </div>
-        <div className="mt-6 grid grid-cols-2 gap-2">
-          <div className="rounded-lg border border-white/[0.08] bg-black/15 p-2.5">
-            <Meta>Confidence</Meta>
-            <p className="mt-1 font-display text-sm font-semibold text-[#b7f960]">94.8%</p>
+
+        {loading ? (
+          <div className="mt-12 flex flex-col items-center justify-center py-8 text-slate-500">
+            <Loader2 className="animate-spin text-[#b7f960]" size={22} />
+            <span className="mt-2 text-xs">Loading incident brief...</span>
           </div>
-          <div className="rounded-lg border border-white/[0.08] bg-black/15 p-2.5">
-            <Meta>Mapped tactic</Meta>
-            <p className="mt-1 font-display text-sm font-semibold text-slate-100">TA0006</p>
+        ) : explanation ? (
+          <>
+            <div className="mt-6 border-l-2 border-[#b7f960] pl-4">
+              <p className="font-display text-[15px] font-semibold leading-snug tracking-[-0.01em] text-slate-100 line-clamp-2">
+                {explanation.executiveSummary}
+              </p>
+              <p className="mt-2.5 text-[11.5px] leading-relaxed text-slate-400 line-clamp-3">
+                {explanation.whyItTriggered}
+              </p>
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <div className="rounded-lg border border-white/[0.08] bg-black/15 p-2.5">
+                <Meta>Confidence</Meta>
+                <p className="mt-1 font-display text-sm font-semibold text-[#b7f960]">
+                  {explanation.confidenceAndUncertainty?.slice(0, 15) || "High"}
+                </p>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-black/15 p-2.5">
+                <Meta>Mapped tactic</Meta>
+                <p className="mt-1 font-display text-sm font-semibold text-slate-100 truncate">
+                  {topAlert?.tactic || "TA0006"}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setLocation(routes.alerts)}
+              className="mt-5 flex items-center gap-2 font-display text-[10px] font-semibold uppercase tracking-[0.12em] text-[#b7f960] transition hover:translate-x-0.5 hover:text-[#d3ff8c]"
+            >
+              Review evidence in Live Alerts <ArrowRight size={13} />
+            </button>
+          </>
+        ) : topAlert ? (
+          <>
+            <div className="mt-6 border-l-2 border-amber-400/80 pl-4">
+              <p className="font-display text-[15px] font-semibold leading-snug tracking-[-0.01em] text-slate-100">
+                {topAlert.title}
+              </p>
+              <p className="mt-2.5 text-[11.5px] leading-relaxed text-slate-400">
+                {topAlert.description || "High-priority incident detected. Open Live Alerts to generate structured AI analysis and mitigation steps."}
+              </p>
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <div className="rounded-lg border border-white/[0.08] bg-black/15 p-2.5">
+                <Meta>Severity</Meta>
+                <p className="mt-1 font-display text-sm font-semibold text-amber-400">{topAlert.severity}</p>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-black/15 p-2.5">
+                <Meta>Mapped tactic</Meta>
+                <p className="mt-1 font-display text-sm font-semibold text-slate-100">{topAlert.tactic || "TA0001"}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setLocation(routes.alerts)}
+              className="mt-5 flex items-center gap-2 font-display text-[10px] font-semibold uppercase tracking-[0.12em] text-[#b7f960] transition hover:translate-x-0.5 hover:text-[#d3ff8c]"
+            >
+              Inspect alert & generate brief <ArrowRight size={13} />
+            </button>
+          </>
+        ) : (
+          <div className="mt-10 py-6 text-center text-slate-500">
+            <ShieldCheck className="mx-auto text-[#b7f960] mb-2" size={24} />
+            <p className="text-xs">No active incidents requiring narration.</p>
           </div>
-        </div>
-        <button
-          onClick={() => toast.info("Phase 1 verified: Database connected. AI narration will be live in Phase 5.")}
-          className="mt-5 flex items-center gap-2 font-display text-[10px] font-semibold uppercase tracking-[0.12em] text-[#b7f960]"
-        >
-          Review evidence trail <ArrowRight size={13} />
-        </button>
+        )}
       </div>
     </Panel>
   );
@@ -1359,18 +1478,45 @@ function ThreatIntel() {
   const [term, setTerm] = useState("185.220.101.45");
   const [result, setResult] = useState<ThreatIntelItem | null>(null);
   const [loading, setLoading] = useState(false);
+  const [providers, setProviders] = useState<ThreatIntelProvider[]>([]);
+  const [showFeeds, setShowFeeds] = useState(false);
+  const [historyItems, setHistoryItems] = useState<ThreatIntelItem[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
-  const lookup = async () => {
-    if (!term.trim()) return;
+  const loadProviders = async () => {
+    try {
+      const res = await api.getThreatIntelProviders();
+      setProviders(res.providers || []);
+    } catch (err) {
+      console.warn("Could not load provider status:", err);
+    }
+  };
+
+  const loadHistory = async () => {
+    try {
+      setLoadingHistory(true);
+      const res = await api.getThreatIntelHistory({ limit: 10 });
+      setHistoryItems(res.items || []);
+    } catch (err) {
+      console.warn("Could not load threat intel history:", err);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const lookup = async (targetTerm?: string) => {
+    const queryTerm = (targetTerm ?? term).trim();
+    if (!queryTerm) return;
     try {
       setLoading(true);
-      const res = await api.lookupThreatIntel(term.trim());
+      const res = await api.lookupThreatIntelPost({ indicator: queryTerm });
       setResult(res.indicator);
       if (res.found) {
-        toast.success(`Found ${term} in database threat cache.`);
+        toast.success(`Found ${queryTerm} in threat intelligence database.`);
       } else {
-        toast.info(`Indicator assessed via backend rule layer.`);
+        toast.info(`Queried intelligence feeds for ${queryTerm}.`);
       }
+      loadHistory();
     } catch (err: any) {
       toast.error(err.message || "Failed to query threat intelligence");
     } finally {
@@ -1380,6 +1526,8 @@ function ThreatIntel() {
 
   useEffect(() => {
     lookup();
+    loadProviders();
+    loadHistory();
   }, []);
 
   return (
@@ -1389,12 +1537,55 @@ function ThreatIntel() {
         title="Threat Intelligence"
         subtitle="Look up IPs, domains, URLs, and file hashes against database cache and verified external feeds."
         actions={
-          <ActionButton onClick={() => toast.info("Feed management will be enabled in Phase 6.")}>
-            <Settings2 size={14} /> Manage feeds
+          <ActionButton onClick={() => setShowFeeds(!showFeeds)}>
+            <Settings2 size={14} /> {showFeeds ? "Hide feeds" : "Manage feeds"}
           </ActionButton>
         }
       />
       <div className="space-y-5 px-4 py-6 md:px-7">
+        {/* Provider Status Drawer / Banner */}
+        {showFeeds && (
+          <Panel className="p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <Meta>Intelligence Feed Providers</Meta>
+                <h3 className="mt-1 font-display text-base font-semibold text-slate-100">
+                  External Provider Integration Status
+                </h3>
+              </div>
+              <span className="rounded bg-white/10 px-2.5 py-1 text-[11px] text-slate-300">
+                Phase 6 Modular Engine
+              </span>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              {providers.map((p) => (
+                <div
+                  key={p.id}
+                  className="rounded-lg border border-white/[0.08] bg-black/25 p-3.5 transition hover:border-white/[0.15]"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-display text-xs font-bold text-slate-200">{p.name}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase ${
+                        p.configured
+                          ? "bg-[#b7f960]/15 text-[#b7f960] border border-[#b7f960]/30"
+                          : "bg-slate-700/30 text-slate-400 border border-slate-600/30"
+                      }`}
+                    >
+                      {p.configured ? "Active Feed" : "Key Not Set"}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-slate-400">{p.description}</p>
+                  <div className="mt-3 flex items-center justify-between border-t border-white/[0.06] pt-2 text-[10px] text-slate-500">
+                    <span>Quota: {p.rateLimitInfo.slice(0, 20)}</span>
+                    <span className="font-mono uppercase">{p.supportedTypes.join(", ")}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        )}
+
         <Panel className="p-5 md:p-7">
           <div className="mx-auto max-w-3xl text-center">
             <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-[#b7f960]/10 text-[#b7f960]">
@@ -1410,10 +1601,10 @@ function ThreatIntel() {
                   onChange={(e) => setTerm(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && lookup()}
                   className="h-11 w-full rounded-lg border border-white/[0.1] bg-black/20 pl-10 pr-3 text-[12px] text-slate-200 outline-none placeholder:text-slate-600 focus:border-[#b7f960]/35"
-                  placeholder="IP, domain, URL, or SHA256"
+                  placeholder="IP (e.g. 185.220.101.45), domain, URL, or SHA256"
                 />
               </div>
-              <ActionButton tone="lime" onClick={lookup} disabled={loading}>
+              <ActionButton tone="lime" onClick={() => lookup()} disabled={loading}>
                 {loading ? <Loader2 className="animate-spin mr-1" size={14} /> : null}
                 Search intelligence
               </ActionButton>
@@ -1435,12 +1626,19 @@ function ThreatIntel() {
                 <div>
                   <Meta>Indicator result</Meta>
                   <h2 className="mt-1 break-all font-display text-xl font-semibold">{result.indicator}</h2>
-                  <p className="mt-2 text-[11px] text-slate-400">Type: {result.indicatorType}</p>
+                  <p className="mt-2 text-[11px] text-slate-400">
+                    Type: <span className="font-mono text-slate-300">{result.indicatorType}</span>
+                    {result.isCached && " · Sourced from local database cache"}
+                  </p>
                 </div>
                 <span
                   className={`rounded-lg border px-3 py-2 font-display text-[10px] font-bold uppercase tracking-[0.1em] ${
                     result.verdict === "Malicious"
-                      ? "border-[#e16c5c]/30 bg-[#e16c5c]/10 text-[#ff9a8d]"
+                      ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                      : result.verdict === "Suspicious"
+                      ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                      : result.verdict === "Clean"
+                      ? "border-[#b7f960]/30 bg-[#b7f960]/10 text-[#b7f960]"
                       : "border-slate-500/30 bg-slate-500/10 text-slate-400"
                   }`}
                 >
@@ -1448,19 +1646,22 @@ function ThreatIntel() {
                 </span>
               </div>
               <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                <EvidenceStat label="Reputation" value={`${result.reputationScore}/100`} />
-                <EvidenceStat label="Detections" value={`${result.detectionsCount} / ${result.totalEngines || 22}`} />
+                <EvidenceStat label="Reputation Score" value={`${result.reputationScore}/100`} />
+                <EvidenceStat label="Detections" value={`${result.detectionsCount} / ${result.totalEngines || 100}`} />
                 <EvidenceStat label="Confidence" value={result.confidence} />
               </div>
               <div className="mt-5 border-t border-white/[0.08] pt-5">
                 <Meta>Associated context</Meta>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {result.associatedContext?.map((item: string) => (
-                    <div key={item} className="flex items-center gap-2 rounded-lg bg-white/[0.035] p-2.5 text-[11px] text-slate-300">
-                      <i className="h-1.5 w-1.5 rounded-full bg-[#e16c5c]" />
-                      {item}
+                  {result.associatedContext?.map((item: string, idx: number) => (
+                    <div key={idx} className="flex items-center gap-2 rounded-lg bg-white/[0.035] p-2.5 text-[11px] text-slate-300">
+                      <i className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#b7f960]" />
+                      <span className="truncate">{item}</span>
                     </div>
                   ))}
+                  {(!result.associatedContext || result.associatedContext.length === 0) && (
+                    <p className="text-xs text-slate-500">No additional contextual notes recorded.</p>
+                  )}
                 </div>
               </div>
             </Panel>
@@ -1469,28 +1670,121 @@ function ThreatIntel() {
               <Meta>Source consensus</Meta>
               <h2 className="mt-1 font-display text-xl font-semibold">Feed verdicts</h2>
               <div className="mt-5 space-y-3">
-                {result.feedVerdicts?.map((feed: any) => (
-                  <div key={feed.source} className="flex items-center gap-3 rounded-lg border border-white/[0.08] bg-black/10 p-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-slate-400">
-                      <Globe2 size={14} />
+                {result.feedVerdicts?.map((feed: any, idx: number) => {
+                  const pName = feed.provider || feed.source || "Feed";
+                  const pStatus = feed.status || "Unknown";
+                  const isSuccess = pStatus === "success";
+
+                  return (
+                    <div key={idx} className="flex items-center gap-3 rounded-lg border border-white/[0.08] bg-black/10 p-3">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-slate-400">
+                        <Globe2 size={14} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-display text-[11px] font-semibold text-slate-200">{pName}</p>
+                        <p className="mt-0.5 text-[10px] text-slate-500 truncate">{feed.details || feed.detail || "Provider active"}</p>
+                      </div>
+                      <span
+                        className={`font-display text-[9px] uppercase tracking-[0.1em] shrink-0 ${
+                          isSuccess
+                            ? feed.verdict === "Malicious"
+                              ? "text-rose-400"
+                              : feed.verdict === "Suspicious"
+                              ? "text-amber-400"
+                              : "text-[#b7f960]"
+                            : pStatus === "unconfigured" || pStatus === "Config Required"
+                            ? "text-slate-500"
+                            : "text-amber-400"
+                        }`}
+                      >
+                        {isSuccess ? feed.verdict : pStatus === "unconfigured" ? "No Key" : pStatus}
+                      </span>
                     </div>
-                    <div className="flex-1">
-                      <p className="font-display text-[11px] font-semibold text-slate-200">{feed.source}</p>
-                      <p className="mt-0.5 text-[10px] text-slate-500">{feed.detail}</p>
-                    </div>
-                    <span
-                      className={`font-display text-[9px] uppercase tracking-[0.1em] ${
-                        feed.status === "Config Required" ? "text-amber-400" : "text-[#ff9a8d]"
-                      }`}
-                    >
-                      {feed.status}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </Panel>
           </div>
         )}
+
+        {/* History Table */}
+        <Panel className="p-5 md:p-6">
+          <div className="flex items-center justify-between border-b border-white/[0.08] pb-4">
+            <div>
+              <Meta>Database Cache</Meta>
+              <h3 className="mt-1 font-display text-base font-semibold text-slate-100">Recent Threat Intelligence Inquiries</h3>
+            </div>
+            <button
+              onClick={loadHistory}
+              disabled={loadingHistory}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-xs text-slate-300 hover:text-white"
+            >
+              <RefreshCw className={loadingHistory ? "animate-spin" : ""} size={12} /> Refresh History
+            </button>
+          </div>
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-white/[0.06] text-slate-500 font-display text-[10px] uppercase tracking-wider">
+                  <th className="py-2.5 px-3">Indicator</th>
+                  <th className="py-2.5 px-3">Type</th>
+                  <th className="py-2.5 px-3">Verdict</th>
+                  <th className="py-2.5 px-3">Reputation</th>
+                  <th className="py-2.5 px-3">Detections</th>
+                  <th className="py-2.5 px-3">Last Seen</th>
+                  <th className="py-2.5 px-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.04]">
+                {historyItems.map((item) => (
+                  <tr key={item.indicator} className="transition hover:bg-white/[0.02]">
+                    <td className="py-3 px-3 font-mono font-semibold text-slate-200">{item.indicator}</td>
+                    <td className="py-3 px-3 uppercase text-[10px] text-slate-400">{item.indicatorType}</td>
+                    <td className="py-3 px-3">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                          item.verdict === "Malicious"
+                            ? "bg-rose-500/15 text-rose-300 border border-rose-500/30"
+                            : item.verdict === "Suspicious"
+                            ? "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                            : item.verdict === "Clean"
+                            ? "bg-[#b7f960]/15 text-[#b7f960] border border-[#b7f960]/30"
+                            : "bg-slate-700/30 text-slate-400 border border-slate-600/30"
+                        }`}
+                      >
+                        {item.verdict}
+                      </span>
+                    </td>
+                    <td className="py-3 px-3 font-mono text-slate-300">{item.reputationScore}/100</td>
+                    <td className="py-3 px-3 text-slate-400">{item.detectionsCount} / {item.totalEngines}</td>
+                    <td className="py-3 px-3 text-slate-500">
+                      {item.lastSeen ? new Date(item.lastSeen).toLocaleDateString() : "-"}
+                    </td>
+                    <td className="py-3 px-3 text-right">
+                      <button
+                        onClick={() => {
+                          setTerm(item.indicator);
+                          lookup(item.indicator);
+                        }}
+                        className="font-display text-[10px] font-semibold uppercase tracking-wider text-[#b7f960] hover:underline"
+                      >
+                        Re-inspect
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {historyItems.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="py-6 text-center text-slate-500">
+                      No cached threat intelligence inquiries recorded in database.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       </div>
     </>
   );
@@ -1645,13 +1939,80 @@ function Reports() {
   const [reportsList, setReportsList] = useState<ReportItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  // Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isCreateMode, setIsCreateMode] = useState(false);
+  const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
+  const [initialTemplate, setInitialTemplate] = useState<
+    "Executive incident report" | "Technical investigation report" | "Operational summary" | undefined
+  >(undefined);
+
+  // Search & Filter State
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  const fetchReports = (searchVal = searchTerm, statusVal = filterStatus) => {
+    setLoading(true);
     api
-      .getReports()
+      .getReports({
+        search: searchVal.trim() || undefined,
+        status: statusVal !== "all" ? statusVal : undefined,
+      })
       .then((res) => setReportsList(res.items))
-      .catch((err) => console.error("Reports fetch error:", err))
+      .catch((err) => {
+        console.error("Reports fetch error:", err);
+        toast.error("Failed to load reports from database");
+      })
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => {
+    fetchReports(searchTerm, filterStatus);
+  }, [filterStatus]);
+
+  const handleOpenCreate = (
+    template?: "Executive incident report" | "Technical investigation report" | "Operational summary"
+  ) => {
+    setSelectedReportId(null);
+    setInitialTemplate(template || "Executive incident report");
+    setIsCreateMode(true);
+    setIsModalOpen(true);
+  };
+
+  const handleOpenPreview = (reportId: number) => {
+    setSelectedReportId(reportId);
+    setIsCreateMode(false);
+    setIsModalOpen(true);
+  };
+
+  const handleExport = (reportId: number, reportCode: string) => {
+    // Open high-fidelity printable HTML export
+    const exportUrl = `/api/reports/${reportId}/export?format=html`;
+    window.open(exportUrl, "_blank");
+    toast.success(`Opening export document for ${reportCode}`);
+  };
+
+  const handleExportCenter = () => {
+    if (reportsList.length > 0) {
+      handleOpenPreview(reportsList[0].id);
+      toast.info(`Opening latest report (${reportsList[0].reportCode}) export options`);
+    } else {
+      toast.info("No reports generated yet. Click 'New report' to create your first report.");
+      handleOpenCreate();
+    }
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    fetchReports(searchTerm, filterStatus);
+  };
+
+  const toggleStatusFilter = () => {
+    const statuses = ["all", "Draft", "Review", "Published"];
+    const nextIdx = (statuses.indexOf(filterStatus) + 1) % statuses.length;
+    setFilterStatus(statuses[nextIdx]);
+  };
 
   return (
     <>
@@ -1661,10 +2022,10 @@ function Reports() {
         subtitle="Build readable, evidence-backed incident reports and recurring posture summaries from PostgreSQL."
         actions={
           <>
-            <ActionButton onClick={() => toast.info("PDF engine will be connected with pdfkit in Phase 9.")}>
+            <ActionButton onClick={handleExportCenter}>
               <FileText size={14} /> Export center
             </ActionButton>
-            <ActionButton tone="lime" onClick={() => toast.info("New report creation dialog will open in Phase 9.")}>
+            <ActionButton tone="lime" onClick={() => handleOpenCreate()}>
               <Plus size={14} /> New report
             </ActionButton>
           </>
@@ -1673,38 +2034,92 @@ function Reports() {
       <div className="space-y-5 px-4 py-6 md:px-7">
         <div className="grid gap-5 lg:grid-cols-3">
           {[
-            ["Incident report", "Describe the event, evidence trail, MITRE mapping, and recommended containment.", ShieldAlert],
-            ["Executive brief", "Summarize risk posture, business impact, and the decisions leadership needs to make.", Sparkles],
-            ["Threat hunting", "Document hypotheses, investigative queries, findings, and monitoring recommendations.", FileSearch],
-          ].map(([title, description, Icon]) => {
-            const TileIcon = Icon as typeof ShieldAlert;
-            return (
-              <button key={title as string} onClick={() => toast.info(`${title} template selected.`)} className="panel panel-lift p-5 text-left">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[#b7f960]/20 bg-[#b7f960]/10 text-[#b7f960]">
-                  <TileIcon size={18} />
-                </div>
-                <h2 className="mt-5 font-display text-lg font-semibold">{title as string}</h2>
-                <p className="mt-2 text-[11px] leading-relaxed text-slate-400">{description as string}</p>
-                <span className="mt-5 inline-flex items-center gap-1.5 font-display text-[10px] font-semibold uppercase tracking-[0.1em] text-[#b7f960]">
-                  Use template <ArrowRight size={13} />
-                </span>
-              </button>
-            );
-          })}
+            {
+              title: "Incident report",
+              type: "Technical investigation report" as const,
+              description: "Describe the event, evidence trail, MITRE mapping, and recommended containment.",
+              Icon: ShieldAlert,
+            },
+            {
+              title: "Executive brief",
+              type: "Executive incident report" as const,
+              description: "Summarize risk posture, business impact, and the decisions leadership needs to make.",
+              Icon: Sparkles,
+            },
+            {
+              title: "Threat hunting",
+              type: "Operational summary" as const,
+              description: "Document hypotheses, investigative queries, findings, and monitoring recommendations.",
+              Icon: FileSearch,
+            },
+          ].map(({ title, type, description, Icon: TileIcon }) => (
+            <button
+              key={title}
+              onClick={() => handleOpenCreate(type)}
+              className="panel panel-lift p-5 text-left transition hover:border-[#b7f960]/40"
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[#b7f960]/20 bg-[#b7f960]/10 text-[#b7f960]">
+                <TileIcon size={18} />
+              </div>
+              <h2 className="mt-5 font-display text-lg font-semibold">{title}</h2>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-400">{description}</p>
+              <span className="mt-5 inline-flex items-center gap-1.5 font-display text-[10px] font-semibold uppercase tracking-[0.1em] text-[#b7f960]">
+                Use template <ArrowRight size={13} />
+              </span>
+            </button>
+          ))}
         </div>
 
         <Panel>
           <div className="flex flex-col gap-3 border-b border-white/[0.08] px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <Meta>Report library</Meta>
-              <h2 className="mt-1 font-display text-xl font-semibold">Recent documents in PostgreSQL</h2>
+              <h2 className="mt-1 font-display text-xl font-semibold">
+                Recent documents in PostgreSQL
+                {filterStatus !== "all" && (
+                  <span className="ml-2 rounded bg-white/[0.08] px-2 py-0.5 text-xs text-slate-300">
+                    Status: {filterStatus}
+                  </span>
+                )}
+              </h2>
             </div>
             <div className="flex items-center gap-2">
-              <ActionButton onClick={() => toast.info("Search report archive")}>
-                <Search size={13} /> Search
-              </ActionButton>
-              <ActionButton onClick={() => toast.info("Filter reports")}>
-                <Filter size={13} />
+              {isSearchOpen ? (
+                <form onSubmit={handleSearchSubmit} className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Search reports or cases..."
+                    className="h-8 rounded-lg border border-white/[0.12] bg-[#0c0f11] px-2.5 text-xs text-slate-200 placeholder-slate-500 focus:border-[#b7f960] focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    className="h-8 rounded-lg border border-[#b7f960]/30 bg-[#b7f960] px-2.5 py-0 font-display text-[10px] font-semibold uppercase tracking-[0.08em] text-[#0f1315] hover:bg-[#c6fa7a]"
+                  >
+                    Go
+                  </button>
+                  <ActionButton
+                    onClick={() => {
+                      setIsSearchOpen(false);
+                      if (searchTerm) {
+                        setSearchTerm("");
+                        fetchReports("", filterStatus);
+                      }
+                    }}
+                    className="h-8 px-2 py-0"
+                  >
+                    Cancel
+                  </ActionButton>
+                </form>
+              ) : (
+                <ActionButton onClick={() => setIsSearchOpen(true)}>
+                  <Search size={13} /> Search
+                </ActionButton>
+              )}
+              <ActionButton onClick={toggleStatusFilter} tone={filterStatus !== "all" ? "lime" : undefined}>
+                <Filter size={13} /> {filterStatus === "all" ? "Filter" : filterStatus}
               </ActionButton>
             </div>
           </div>
@@ -1733,6 +2148,11 @@ function Reports() {
                       >
                         {rep.status}
                       </span>
+                      {rep.incidentName && (
+                        <span className="rounded-sm bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-slate-400">
+                          {rep.incidentName}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-1 text-[11px] text-slate-400">{rep.title}</p>
                     <p className="mt-1 font-display text-[9px] uppercase tracking-[0.1em] text-slate-600">
@@ -1740,22 +2160,41 @@ function Reports() {
                     </p>
                   </div>
                   <div className="flex gap-2">
-                    <ActionButton onClick={() => toast.info(`Previewing report ${rep.reportCode}`)} className="py-2">
+                    <ActionButton onClick={() => handleOpenPreview(rep.id)} className="py-2">
                       Preview
                     </ActionButton>
-                    <ActionButton onClick={() => toast.info(`PDF export will be enabled in Phase 9.`)} className="py-2">
+                    <ActionButton onClick={() => handleExport(rep.id, rep.reportCode)} className="py-2">
                       <FileText size={13} /> Export
                     </ActionButton>
                   </div>
                 </div>
               ))}
               {!reportsList.length && (
-                <div className="p-8 text-center text-slate-500">No reports generated in database yet.</div>
+                <div className="p-8 text-center text-slate-500">
+                  {searchTerm || filterStatus !== "all"
+                    ? "No reports match your current filter."
+                    : "No reports generated in database yet."}
+                </div>
               )}
             </div>
           )}
         </Panel>
       </div>
+
+      {/* Interactive Report Creation & Inspection Modal */}
+      <ReportModal
+        reportId={selectedReportId}
+        isOpen={isModalOpen}
+        isCreateMode={isCreateMode}
+        initialTemplate={initialTemplate}
+        onClose={() => setIsModalOpen(false)}
+        onReportGenerated={() => {
+          fetchReports();
+        }}
+        onStatusUpdated={() => {
+          fetchReports();
+        }}
+      />
     </>
   );
 }

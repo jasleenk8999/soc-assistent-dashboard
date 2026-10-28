@@ -108,6 +108,47 @@ export interface BulkIngestResponse {
   alerts: AlertItem[];
 }
 
+export interface PythonFinding {
+  ruleId: string;
+  title: string;
+  severity: string;
+  mitre: string;
+  description: string;
+  recordId: number;
+  eventId: string;
+  timestamp: string;
+  computer: string;
+  user: string;
+  evidence: string;
+  recommendation: string;
+}
+
+export interface PythonAttackChain {
+  chainName: string;
+  severity: string;
+  stages: string[];
+  summary: string;
+}
+
+export interface PythonMitreMatrixItem {
+  technique: string;
+  count: number;
+}
+
+export interface PythonLogEnrichment {
+  status: "success" | "unavailable" | "skipped" | "error" | "timeout";
+  enabled: boolean;
+  threatScore?: number;
+  riskLevel?: string;
+  summaryStatus?: string;
+  findingsCount?: number;
+  findings?: PythonFinding[];
+  attackChains?: PythonAttackChain[];
+  mitreMatrix?: PythonMitreMatrixItem[];
+  recommendations?: string[];
+  message?: string;
+}
+
 export interface LogUploadResponse {
   success: boolean;
   fileName: string;
@@ -117,6 +158,7 @@ export interface LogUploadResponse {
   alertsGeneratedCount: number;
   alerts: AlertItem[];
   truncated?: boolean;
+  pythonAnalysis?: PythonLogEnrichment;
 }
 
 export interface AlertsResponse {
@@ -172,8 +214,31 @@ export interface NetworkFlowItem {
   createdAt: string;
 }
 
+export interface ThreatIntelProvider {
+  id: "abuseipdb" | "virustotal" | "alienvault";
+  name: string;
+  configured: boolean;
+  supportedTypes: ("ip" | "domain" | "url" | "hash")[];
+  rateLimitInfo: string;
+  description: string;
+}
+
+export interface ThreatIntelProviderVerdict {
+  provider: "AbuseIPDB" | "VirusTotal" | "AlienVault OTX" | string;
+  status: "success" | "unconfigured" | "rate_limited" | "error" | "not_supported" | string;
+  verdict: "Malicious" | "Suspicious" | "Clean" | "Unknown";
+  reputationScore?: number;
+  detectionsCount?: number;
+  totalEngines?: number;
+  details?: string;
+  rawAttributes?: Record<string, any>;
+  retrievedAt?: string;
+  source?: string;
+  detail?: string;
+}
+
 export interface ThreatIntelItem {
-  id: number;
+  id?: number;
   indicator: string;
   indicatorType: string;
   verdict: "Malicious" | "Suspicious" | "Clean" | "Unknown";
@@ -182,8 +247,27 @@ export interface ThreatIntelItem {
   totalEngines: number;
   confidence: string;
   associatedContext: string[];
-  feedVerdicts: Array<{ source: string; detail: string; status: string }>;
-  lastSeen: string;
+  feedVerdicts: ThreatIntelProviderVerdict[];
+  source?: string;
+  isCached?: boolean;
+  isStale?: boolean;
+  firstSeen?: string;
+  lastSeen?: string;
+  createdAt?: string;
+}
+
+export interface AlertThreatIntelResponse {
+  success: boolean;
+  alertId: number;
+  indicatorsCount: number;
+  indicators: Array<ThreatIntelItem & { sourceContext: string }>;
+  summary: {
+    maliciousCount: number;
+    suspiciousCount: number;
+    cleanCount: number;
+    unknownCount: number;
+    highestReputationScore: number;
+  };
 }
 
 export interface ReportItem {
@@ -211,6 +295,31 @@ export interface MalwareSampleItem {
   indicators: string[];
   status: string;
   createdAt: string;
+}
+
+export interface IncidentExplanation {
+  id: number;
+  alertId: number;
+  provider: string;
+  model: string | null;
+  status: "pending" | "completed" | "failed";
+  errorMessage?: string | null;
+  evidenceSnapshotLogIds?: number[];
+  evidenceSnapshotAlertFields?: Record<string, any>;
+  isStale: boolean;
+  executiveSummary: string;
+  whyItTriggered: string;
+  evidenceNarrative: string;
+  mitreContext: string;
+  potentialImpact: string;
+  confidenceAndUncertainty: string;
+  investigationSteps: string;
+  containmentConsiderations: string;
+  missingEvidence: string;
+  generatedByUserId?: number | null;
+  generatedByUserName?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // In-memory short-lived access token
@@ -365,6 +474,19 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
 
+  // AI Incident Explanations (Phase 5)
+  getAlertExplanation: (alertId: number) =>
+    request<{ explanation: IncidentExplanation | null }>(`/api/alerts/${alertId}/explanation`),
+
+  explainAlert: (alertId: number, options?: { forceRegenerate?: boolean }) =>
+    request<{ success: boolean; explanation: IncidentExplanation; generated: boolean; reused?: boolean }>(
+      `/api/alerts/${alertId}/explain`,
+      {
+        method: "POST",
+        body: JSON.stringify(options || {}),
+      }
+    ),
+
   // Logs & Ingestion (Phase 3)
   getLogs: (params?: {
     search?: string;
@@ -436,17 +558,69 @@ export const api = {
       signatures: { ddos: string; beaconing: string; dnsTunneling: string };
     }>("/api/network/stats"),
 
-  // Threat Intelligence
-  getThreatIntelHistory: () =>
-    request<{ items: ThreatIntelItem[]; total: number }>("/api/threat-intel/history"),
+  // Threat Intelligence (Phase 6)
+  getThreatIntelHistory: (params?: { limit?: number; offset?: number; search?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.offset) sp.set("offset", String(params.offset));
+    if (params?.search) sp.set("search", params.search);
+    const qs = sp.toString();
+    return request<{ success: boolean; items: ThreatIntelItem[]; total: number }>(
+      `/api/threat-intel/history${qs ? `?${qs}` : ""}`
+    );
+  },
+
+  getThreatIntelProviders: () =>
+    request<{ success: boolean; providers: ThreatIntelProvider[]; anyConfigured: boolean }>(
+      "/api/threat-intel/providers"
+    ),
 
   lookupThreatIntel: (indicator: string) =>
     request<{ found: boolean; source?: string; indicator: ThreatIntelItem }>(
       `/api/threat-intel/lookup?indicator=${encodeURIComponent(indicator)}`
     ),
 
-  // Reports
-  getReports: () => request<{ items: ReportItem[]; total: number }>("/api/reports"),
+  lookupThreatIntelPost: (payload: { indicator: string; indicatorType?: string; forceRefresh?: boolean }) =>
+    request<{ success: boolean; found: boolean; source?: string; indicator: ThreatIntelItem }>(
+      "/api/threat-intel/lookup",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  getAlertThreatIntel: (alertId: number) =>
+    request<AlertThreatIntelResponse>(`/api/threat-intel/alerts/${alertId}`),
+
+  // Reports (Phase 8)
+  getReports: (params?: { search?: string; reportType?: string; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.append("search", params.search);
+    if (params?.reportType) q.append("reportType", params.reportType);
+    if (params?.status) q.append("status", params.status);
+    const qs = q.toString();
+    return request<{ items: ReportItem[]; total: number }>(`/api/reports${qs ? `?${qs}` : ""}`);
+  },
+
+  getReportById: (id: number) =>
+    request<ReportItem & { linkedCase?: any }>(`/api/reports/${id}`),
+
+  generateReport: (data: { reportType: string; title?: string; incidentName?: string; caseId?: number }) =>
+    request<{ success: boolean; report: ReportItem; linkedCase?: any; message: string }>("/api/reports", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateReportStatus: (id: number, status: "Draft" | "Review" | "Published") =>
+    request<{ success: boolean; report: ReportItem }>(`/api/reports/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
+  deleteReport: (id: number) =>
+    request<{ success: boolean; message: string }>(`/api/reports/${id}`, {
+      method: "DELETE",
+    }),
 
   // Malware
   getMalwareSamples: () =>

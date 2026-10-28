@@ -1,4 +1,6 @@
 import bcrypt from "bcryptjs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { db, pool, checkDatabaseConnection } from "./index";
 import {
   users,
@@ -524,7 +526,16 @@ export async function seedDatabase() {
 }
 
 // Allow direct execution: npx tsx server/db/seed.ts
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMainModule = () => {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase();
+  } catch {
+    return false;
+  }
+};
+
+if (isMainModule()) {
   seedDatabase()
     .then(() => {
       console.log("Seeding finished successfully.");

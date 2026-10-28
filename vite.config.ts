@@ -226,9 +226,10 @@ export default defineConfig({
     host: true,
     proxy: {
       "/api": {
-        target: "http://localhost:5001",
+        target: process.env.BACKEND_URL || `http://127.0.0.1:${process.env.PORT || "5001"}`,
         changeOrigin: true,
         secure: false,
+        ws: true,
       },
     },
     allowedHosts: [

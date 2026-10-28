@@ -1,5 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { createServer } from "http";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
@@ -38,17 +39,26 @@ export async function createApp() {
 
   // CORS configuration
   const allowedOrigins = [
-    process.env.CLIENT_URL || "http://localhost:3000",
+    process.env.CLIENT_URL,
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "http://localhost:5001",
-  ];
+    "http://127.0.0.1:5001",
+  ].filter(Boolean) as string[];
+
   app.use(
     cors({
       origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        if (
+          !origin ||
+          allowedOrigins.includes(origin) ||
+          /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+        ) {
           callback(null, true);
         } else {
-          callback(null, true); // Allow during local development
+          callback(null, false);
         }
       },
       credentials: true,
@@ -79,10 +89,9 @@ export async function createApp() {
   app.use("/api/events", eventsRouter);
 
   // Production Static File Serving
-  const staticPath =
-    process.env.NODE_ENV === "production"
-      ? path.resolve(__dirname, "public")
-      : path.resolve(__dirname, "..", "dist", "public");
+  const candidateProdPath = path.resolve(__dirname, "public");
+  const candidateDistPath = path.resolve(__dirname, "..", "dist", "public");
+  const staticPath = fs.existsSync(candidateProdPath) ? candidateProdPath : candidateDistPath;
 
   app.use(express.static(staticPath));
 
@@ -146,7 +155,16 @@ async function startServer() {
 }
 
 // Start if invoked directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMainModule = () => {
+  if (!process.argv[1]) return true;
+  try {
+    return fileURLToPath(import.meta.url).toLowerCase() === path.resolve(process.argv[1]).toLowerCase();
+  } catch {
+    return true;
+  }
+};
+
+if (isMainModule()) {
   startServer().catch((err) => {
     console.error("Fatal startup error:", err);
     process.exit(1);

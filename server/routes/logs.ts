@@ -19,6 +19,7 @@ import { PERMISSIONS } from "../../shared/auth";
 import { LogNormalizer, type NormalizedLog } from "../services/logNormalizer";
 import { DetectionEngine } from "../services/detectionEngine";
 import { RealtimeService } from "../services/realtimeService";
+import { PythonDetectorService } from "../services/pythonDetectorService";
 
 export const logsRouter = Router();
 
@@ -429,6 +430,9 @@ logsRouter.post(
       });
       RealtimeService.notifyStatsUpdated();
 
+      // Optional Python threat enrichment (non-blocking, never fails normal ingestion)
+      const pythonAnalysis = await PythonDetectorService.analyzeLogs(fileBuffer, req.file.originalname);
+
       return res.status(201).json({
         success: true,
         fileName: req.file.originalname,
@@ -440,6 +444,7 @@ logsRouter.post(
         alertsGeneratedCount: uniqueAlerts.length,
         alerts: uniqueAlerts,
         truncated: normalizedLogs.length > MAX_UPLOAD_RECORDS,
+        pythonAnalysis,
       });
     } catch (error: any) {
       console.error("Log file upload error:", error);

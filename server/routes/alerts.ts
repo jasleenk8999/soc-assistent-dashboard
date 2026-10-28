@@ -6,6 +6,7 @@ import { requireAuth, requirePermission, optionalAuth } from "../middleware/auth
 import { PERMISSIONS } from "../../shared/auth";
 import { RealtimeService } from "../services/realtimeService";
 import { generateExplanation, type AlertContext, type LogContext } from "../services/incidentExplanationService";
+import { getAlertThreatIntel } from "../services/threatIntelService";
 
 export const alertsRouter = Router();
 
@@ -135,6 +136,294 @@ alertsRouter.get("/:id/logs", optionalAuth, async (req: Request, res: Response) 
     return res.status(500).json({ error: "Failed to fetch originating logs for alert" });
   }
 });
+
+// Helper: Check if an existing explanation has become stale compared to current alert evidence
+function checkExplanationStaleness(
+  explanation: typeof incidentExplanations.$inferSelect,
+  alert: typeof alerts.$inferSelect
+): { isStale: boolean; stalenessReason?: string } {
+  if (explanation.isStale) {
+    return { isStale: true, stalenessReason: "Explanation is marked stale." };
+  }
+
+  // 1. Check if linked log IDs changed
+  const currentLogIds: number[] = Array.isArray(alert.relatedLogIds) ? (alert.relatedLogIds as number[]) : [];
+  const snapshotLogIds: number[] = Array.isArray(explanation.evidenceSnapshotLogIds)
+    ? (explanation.evidenceSnapshotLogIds as number[])
+    : [];
+
+  if (currentLogIds.length !== snapshotLogIds.length) {
+    return { isStale: true, stalenessReason: "Linked log records count changed." };
+  }
+  const currentSet = new Set(currentLogIds);
+  for (const logId of snapshotLogIds) {
+    if (!currentSet.has(logId)) {
+      return { isStale: true, stalenessReason: "Linked log evidence has changed." };
+    }
+  }
+
+  // 2. Check if key alert fields changed
+  const snapshotFields = (explanation.evidenceSnapshotAlertFields as Record<string, any>) || {};
+  if (snapshotFields.severity && snapshotFields.severity !== alert.severity) {
+    return { isStale: true, stalenessReason: `Alert severity changed from ${snapshotFields.severity} to ${alert.severity}` };
+  }
+  if (snapshotFields.status && snapshotFields.status !== alert.status) {
+    return { isStale: true, stalenessReason: `Alert status changed from ${snapshotFields.status} to ${alert.status}` };
+  }
+  if (snapshotFields.source && snapshotFields.source !== alert.source) {
+    return { isStale: true, stalenessReason: `Alert source changed from ${snapshotFields.source} to ${alert.source}` };
+  }
+
+  return { isStale: false };
+}
+
+// GET /api/alerts/:id/explanation - Retrieve saved incident explanation (Phase 5)
+alertsRouter.get(
+  "/:id/explanation",
+  requireAuth,
+  requirePermission(PERMISSIONS.READ_EXPLANATION),
+  async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid alert ID format" });
+      }
+
+      const [alert] = await db.select().from(alerts).where(eq(alerts.id, id));
+      if (!alert) {
+        return res.status(404).json({ error: `Alert #${id} not found` });
+      }
+
+      const [explanation] = await db
+        .select()
+        .from(incidentExplanations)
+        .where(eq(incidentExplanations.alertId, id))
+        .orderBy(desc(incidentExplanations.createdAt))
+        .limit(1);
+
+      if (!explanation) {
+        return res.json({ success: true, explanation: null, isStale: false });
+      }
+
+      const staleness = checkExplanationStaleness(explanation, alert);
+      if (staleness.isStale !== explanation.isStale) {
+        await db
+          .update(incidentExplanations)
+          .set({ isStale: staleness.isStale, updatedAt: new Date() })
+          .where(eq(incidentExplanations.id, explanation.id));
+        explanation.isStale = staleness.isStale;
+      }
+
+      return res.json({
+        success: true,
+        explanation,
+        isStale: staleness.isStale,
+        stalenessReason: staleness.stalenessReason,
+      });
+    } catch (error: any) {
+      console.error("[Get Alert Explanation Error]", error);
+      return res.status(500).json({ error: "Failed to fetch alert explanation" });
+    }
+  }
+);
+
+// POST /api/alerts/:id/explain - Generate or refresh structured AI explanation (Phase 5)
+alertsRouter.post(
+  "/:id/explain",
+  requireAuth,
+  requirePermission(PERMISSIONS.GENERATE_EXPLANATION),
+  async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid alert ID format" });
+      }
+
+      const forceRegenerate = Boolean(req.body?.forceRegenerate);
+
+      const [alert] = await db.select().from(alerts).where(eq(alerts.id, id));
+      if (!alert) {
+        return res.status(404).json({ error: `Alert #${id} not found` });
+      }
+
+      // Check for existing saved explanation
+      const [existing] = await db
+        .select()
+        .from(incidentExplanations)
+        .where(eq(incidentExplanations.alertId, id))
+        .orderBy(desc(incidentExplanations.createdAt))
+        .limit(1);
+
+      const staleness = existing ? checkExplanationStaleness(existing, alert) : { isStale: false };
+
+      // Reuse existing explanation if not forced, not stale, and already completed
+      if (existing && !forceRegenerate && !staleness.isStale && existing.status === "completed") {
+        return res.json({
+          success: true,
+          explanation: existing,
+          generated: false,
+          reused: true,
+          isStale: false,
+        });
+      }
+
+      // Fetch originating logs for grounded evidence
+      const logIds: number[] = Array.isArray(alert.relatedLogIds) ? (alert.relatedLogIds as number[]) : [];
+      let originatingLogs: any[] = [];
+      if (logIds.length > 0) {
+        originatingLogs = await db
+          .select()
+          .from(logs)
+          .where(inArray(logs.id, logIds))
+          .orderBy(desc(logs.timestamp));
+      }
+
+      // Correlate with threat intelligence (Phase 6)
+      let alertThreatIntel: any[] = [];
+      try {
+        const intelResult = await getAlertThreatIntel(alert.id);
+        alertThreatIntel = intelResult.indicators || [];
+      } catch (err) {
+        // Continue gracefully if threat intel lookup has issues
+      }
+
+      const alertContext: AlertContext = {
+        id: alert.id,
+        ruleId: alert.ruleId,
+        ruleName: alert.ruleName,
+        severity: alert.severity,
+        title: alert.title,
+        source: alert.source,
+        destination: alert.destination,
+        tactic: alert.tactic,
+        technique: alert.technique,
+        confidence: alert.confidence,
+        description: alert.description,
+        evidence: alert.evidence,
+        suggestedNextSteps: alert.suggestedNextSteps,
+        dedupKey: alert.dedupKey,
+        threatIntel: alertThreatIntel,
+        createdAt: new Date(alert.createdAt),
+      };
+
+      const logContexts: LogContext[] = originatingLogs.map((l) => ({
+        id: l.id,
+        timestamp: new Date(l.timestamp),
+        sourceType: l.sourceType,
+        sourceIp: l.sourceIp,
+        destinationIp: l.destinationIp,
+        sourcePort: l.sourcePort,
+        destinationPort: l.destinationPort,
+        username: l.username,
+        eventId: l.eventId,
+        eventCategory: l.eventCategory,
+        logLevel: l.logLevel,
+        rawLog: l.rawLog,
+        parsedFields: l.parsedFields,
+        isThreat: l.isThreat,
+        threatReason: l.threatReason,
+      }));
+
+      // Generate structured explanation (deterministic fallback if no provider API key)
+      const result = await generateExplanation(alertContext, logContexts);
+
+      const evidenceSnapshotLogIds = logIds;
+      const evidenceSnapshotAlertFields = {
+        severity: alert.severity,
+        status: alert.status,
+        source: alert.source,
+        destination: alert.destination,
+        tactic: alert.tactic,
+        technique: alert.technique,
+        evidence: alert.evidence,
+      };
+
+      let savedRecord: typeof incidentExplanations.$inferSelect;
+
+      if (existing) {
+        const [updated] = await db
+          .update(incidentExplanations)
+          .set({
+            provider: result.provider,
+            model: result.model,
+            status: result.status,
+            errorMessage: result.errorMessage ?? null,
+            evidenceSnapshotLogIds,
+            evidenceSnapshotAlertFields,
+            isStale: false,
+            executiveSummary: result.sections.executiveSummary,
+            whyItTriggered: result.sections.whyItTriggered,
+            evidenceNarrative: result.sections.evidenceNarrative,
+            mitreContext: result.sections.mitreContext,
+            potentialImpact: result.sections.potentialImpact,
+            confidenceAndUncertainty: result.sections.confidenceAndUncertainty,
+            investigationSteps: result.sections.investigationSteps,
+            containmentConsiderations: result.sections.containmentConsiderations,
+            missingEvidence: result.sections.missingEvidence,
+            generatedByUserId: req.user?.id ?? null,
+            generatedByUserName: req.user?.fullName ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(incidentExplanations.id, existing.id))
+          .returning();
+        savedRecord = updated;
+      } else {
+        const [inserted] = await db
+          .insert(incidentExplanations)
+          .values({
+            alertId: alert.id,
+            provider: result.provider,
+            model: result.model,
+            status: result.status,
+            errorMessage: result.errorMessage ?? null,
+            evidenceSnapshotLogIds,
+            evidenceSnapshotAlertFields,
+            isStale: false,
+            executiveSummary: result.sections.executiveSummary,
+            whyItTriggered: result.sections.whyItTriggered,
+            evidenceNarrative: result.sections.evidenceNarrative,
+            mitreContext: result.sections.mitreContext,
+            potentialImpact: result.sections.potentialImpact,
+            confidenceAndUncertainty: result.sections.confidenceAndUncertainty,
+            investigationSteps: result.sections.investigationSteps,
+            containmentConsiderations: result.sections.containmentConsiderations,
+            missingEvidence: result.sections.missingEvidence,
+            generatedByUserId: req.user?.id ?? null,
+            generatedByUserName: req.user?.fullName ?? null,
+          })
+          .returning();
+        savedRecord = inserted;
+      }
+
+      // Broadcast real-time SSE event
+      RealtimeService.publish({
+        id: `evt_explain_${savedRecord.id}_${Date.now()}`,
+        type: "alert.explanation_updated",
+        timestamp: new Date().toISOString(),
+        data: {
+          alertId: alert.id,
+          explanationId: savedRecord.id,
+          provider: savedRecord.provider,
+          model: savedRecord.model,
+          status: savedRecord.status as "completed" | "failed",
+          generatedAt: savedRecord.updatedAt.toISOString(),
+          generatedByUserName: savedRecord.generatedByUserName,
+        },
+      });
+
+      return res.status(existing ? 200 : 201).json({
+        success: true,
+        explanation: savedRecord,
+        generated: true,
+        reused: false,
+        isStale: false,
+      });
+    } catch (error: any) {
+      console.error("[Generate Alert Explanation Error]", error);
+      return res.status(500).json({ error: "Failed to generate alert explanation" });
+    }
+  }
+);
 
 // Handler for alert status updates
 const updateAlertStatusHandler = async (req: Request, res: Response) => {

@@ -34,7 +34,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, type AlertItem, type LogItem } from "@/lib/api";
+import { api, type AlertItem, type LogItem, type PythonLogEnrichment } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 
 export function LogIngestion() {
@@ -80,7 +80,9 @@ export function LogIngestion() {
     fileName: string;
     logsIngested: number;
     alertsGeneratedCount: number;
+    pythonAnalysis?: PythonLogEnrichment;
   } | null>(null);
+  const [showPythonDetails, setShowPythonDetails] = useState(false);
 
   const fetchLogs = async () => {
     try {
@@ -246,6 +248,7 @@ export function LogIngestion() {
         fileName: res.fileName,
         logsIngested: res.logsIngested,
         alertsGeneratedCount: res.alertsGeneratedCount,
+        pythonAnalysis: res.pythonAnalysis,
       });
 
       toast.success(
@@ -904,18 +907,153 @@ export function LogIngestion() {
 
               {/* Upload Result */}
               {uploadResult && (
-                <div className="rounded-xl border border-[#b7f960]/30 bg-[#b7f960]/10 p-3.5 text-xs text-slate-200">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-[#b7f960]" />
-                    <span className="font-semibold text-[#b7f960]">Ingestion Complete!</span>
+                <div className="space-y-2.5">
+                  <div className="rounded-xl border border-[#b7f960]/30 bg-[#b7f960]/10 p-3.5 text-xs text-slate-200">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 size={16} className="text-[#b7f960]" />
+                      <span className="font-semibold text-[#b7f960]">Native Ingestion Complete!</span>
+                    </div>
+                    <p className="mt-1">
+                      Processed <strong className="text-white">{uploadResult.fileName}</strong>: Ingested{" "}
+                      <strong className="text-white">{uploadResult.logsIngested}</strong> records and
+                      generated{" "}
+                      <strong className="text-[#e16c5c]">{uploadResult.alertsGeneratedCount}</strong> real-time
+                      security alerts in the database.
+                    </p>
                   </div>
-                  <p className="mt-1">
-                    Processed <strong className="text-white">{uploadResult.fileName}</strong>: Ingested{" "}
-                    <strong className="text-white">{uploadResult.logsIngested}</strong> records and
-                    generated{" "}
-                    <strong className="text-[#e16c5c]">{uploadResult.alertsGeneratedCount}</strong> real-time
-                    security alerts.
-                  </p>
+
+                  {/* Isolated Python AI Inspection Card (Sidecar POC) */}
+                  {uploadResult.pythonAnalysis && (
+                    <div className="rounded-xl border border-cyan-500/30 bg-[#0d1624] p-3.5 text-xs text-slate-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <ShieldAlert size={15} className="text-cyan-400" />
+                          <span className="font-semibold text-cyan-300">
+                            Python AI Threat Inspection (Sidecar POC)
+                          </span>
+                        </div>
+                        <span className="rounded bg-cyan-950/80 px-2 py-0.5 text-[10px] font-medium text-cyan-300 border border-cyan-800">
+                          Non-DB Advisory
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[10px] text-slate-400">
+                        Advisory analysis flags preliminary bursts (≥5 attempts) without altering the database alert threshold (≥10 attempts/3m).
+                      </p>
+
+                      {uploadResult.pythonAnalysis.status === "success" ? (
+                        <div className="mt-2.5 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className="text-slate-400">Risk Level:</span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 font-semibold uppercase ${
+                                uploadResult.pythonAnalysis.riskLevel === "CRITICAL"
+                                  ? "bg-red-500/20 text-red-300 border border-red-500/30"
+                                  : uploadResult.pythonAnalysis.riskLevel === "HIGH"
+                                  ? "bg-orange-500/20 text-orange-300 border border-orange-500/30"
+                                  : uploadResult.pythonAnalysis.riskLevel === "MEDIUM"
+                                  ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"
+                                  : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                              }`}
+                            >
+                              {uploadResult.pythonAnalysis.riskLevel || "CLEAN"}
+                            </span>
+                            <span className="text-slate-400 ml-2">Threat Score:</span>
+                            <span className="font-mono font-bold text-white">
+                              {uploadResult.pythonAnalysis.threatScore ?? 0}/100
+                            </span>
+                            <span className="text-slate-400 ml-2">Suspicious Findings:</span>
+                            <span className="font-mono font-bold text-cyan-300">
+                              {uploadResult.pythonAnalysis.findingsCount ?? 0}
+                            </span>
+                          </div>
+
+                          {uploadResult.pythonAnalysis.attackChains &&
+                            uploadResult.pythonAnalysis.attackChains.length > 0 && (
+                              <div className="rounded-lg border border-red-500/20 bg-red-950/20 p-2 text-[11px]">
+                                <div className="font-semibold text-red-300">
+                                  Attack Progression Detected:
+                                </div>
+                                {uploadResult.pythonAnalysis.attackChains.map((chain, idx) => (
+                                  <div key={idx} className="mt-1">
+                                    <div className="text-slate-300 font-medium">{chain.chainName}</div>
+                                    <div className="mt-0.5 flex flex-wrap gap-1 text-[10px] text-slate-400">
+                                      {chain.stages.map((stg, sIdx) => (
+                                        <span key={sIdx} className="rounded bg-black/40 px-1.5 py-0.5">
+                                          {stg}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                          {uploadResult.pythonAnalysis.findings &&
+                            uploadResult.pythonAnalysis.findings.length > 0 && (
+                              <div>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowPythonDetails(!showPythonDetails)}
+                                  className="text-[11px] font-medium text-cyan-400 hover:text-cyan-300 underline"
+                                >
+                                  {showPythonDetails
+                                    ? "Hide Python Findings Details"
+                                    : `View ${uploadResult.pythonAnalysis.findings.length} Finding Details`}
+                                </button>
+
+                                {showPythonDetails && (
+                                  <div className="mt-2 max-h-40 overflow-y-auto space-y-1.5 rounded-lg border border-white/[0.06] bg-black/40 p-2 text-[10px]">
+                                    {uploadResult.pythonAnalysis.findings.map((f, idx) => (
+                                      <div
+                                        key={idx}
+                                        className="border-b border-white/[0.04] pb-1.5 last:border-b-0"
+                                      >
+                                        <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                                          <span className="text-cyan-400">[{f.severity}]</span>
+                                          <span>{f.title}</span>
+                                          <span className="text-slate-500">({f.mitre})</span>
+                                        </div>
+                                        {f.evidence && (
+                                          <div className="font-mono text-slate-400 truncate">
+                                            Evidence: {f.evidence}
+                                          </div>
+                                        )}
+                                        {f.recommendation && (
+                                          <div className="text-slate-400 mt-0.5">
+                                            Action: {f.recommendation}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                        </div>
+                      ) : (
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          {uploadResult.pythonAnalysis.status === "skipped" && (
+                            <span>Python inspection skipped: {uploadResult.pythonAnalysis.message}</span>
+                          )}
+                          {uploadResult.pythonAnalysis.status === "unavailable" && (
+                            <span className="text-amber-400/90">
+                              Python detector sidecar is currently unavailable. Normal ingestion completed unaffected.
+                            </span>
+                          )}
+                          {uploadResult.pythonAnalysis.status === "timeout" && (
+                            <span className="text-amber-400/90">
+                              Python detector timed out. Normal ingestion completed unaffected.
+                            </span>
+                          )}
+                          {uploadResult.pythonAnalysis.status === "error" && (
+                            <span className="text-red-400/90">
+                              Python detector returned an error: {uploadResult.pythonAnalysis.message}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
