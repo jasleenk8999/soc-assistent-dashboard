@@ -4,6 +4,7 @@ import { db } from "../db/index";
 import { alerts, logs } from "../db/schema";
 import { requireAuth, requirePermission, optionalAuth } from "../middleware/authMiddleware";
 import { PERMISSIONS } from "../../shared/auth";
+import { RealtimeService } from "../services/realtimeService";
 
 export const alertsRouter = Router();
 
@@ -147,6 +148,13 @@ const updateAlertStatusHandler = async (req: Request, res: Response) => {
       });
     }
 
+    const [existing] = await db.select({ status: alerts.status }).from(alerts).where(eq(alerts.id, id));
+    if (!existing) {
+      return res.status(404).json({ error: `Alert #${id} not found` });
+    }
+
+    const previousStatus = existing.status;
+
     const [updated] = await db
       .update(alerts)
       .set({ status, updatedAt: new Date() })
@@ -156,6 +164,26 @@ const updateAlertStatusHandler = async (req: Request, res: Response) => {
     if (!updated) {
       return res.status(404).json({ error: `Alert #${id} not found` });
     }
+
+    // Publish alert.status_changed event to real-time subscribers
+    RealtimeService.publish({
+      id: `evt_status_${updated.id}_${Date.now()}`,
+      type: "alert.status_changed",
+      timestamp: new Date().toISOString(),
+      data: {
+        alertId: updated.id,
+        previousStatus,
+        newStatus: updated.status,
+        updatedAt: updated.updatedAt.toISOString(),
+        actor: {
+          id: req.user?.id || 0,
+          fullName: req.user?.fullName || "Security Analyst",
+          role: req.user?.role || "Senior Analyst",
+        },
+      },
+    });
+
+    RealtimeService.notifyStatsUpdated();
 
     return res.json({ success: true, alert: updated });
   } catch (error: any) {

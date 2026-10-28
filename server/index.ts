@@ -19,6 +19,8 @@ import { networkRouter } from "./routes/network";
 import { threatIntelRouter } from "./routes/threatIntel";
 import { reportsRouter } from "./routes/reports";
 import { malwareRouter } from "./routes/malware";
+import { eventsRouter } from "./routes/events";
+import { RealtimeService } from "./services/realtimeService";
 
 dotenv.config();
 
@@ -74,6 +76,7 @@ export async function createApp() {
   app.use("/api/threat-intel", threatIntelRouter);
   app.use("/api/reports", reportsRouter);
   app.use("/api/malware", malwareRouter);
+  app.use("/api/events", eventsRouter);
 
   // Production Static File Serving
   const staticPath =
@@ -128,6 +131,18 @@ async function startServer() {
     console.log(`🚀 SOC Assistant Backend API listening on http://localhost:${port}/`);
     console.log(`📋 Health check: http://localhost:${port}/api/health`);
   });
+
+  const shutdown = () => {
+    console.log("Shutting down server gracefully...");
+    RealtimeService.shutdown();
+    server.close(() => {
+      console.log("HTTP server closed.");
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 // Start if invoked directly

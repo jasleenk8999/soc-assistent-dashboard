@@ -17,6 +17,7 @@ import { and, desc, eq, gte, ilike, inArray, or, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import { alerts, logs } from "../db/schema";
 import type { NormalizedLog } from "./logNormalizer";
+import { RealtimeService } from "./realtimeService";
 
 export interface DetectionMatch {
   ruleId: string;
@@ -635,6 +636,26 @@ export class DetectionEngine {
           .where(eq(alerts.id, existingAlert.id))
           .returning();
 
+        RealtimeService.publish({
+          id: `evt_alert_upd_${updated.id}_${Date.now()}`,
+          type: "alert.updated",
+          timestamp: new Date().toISOString(),
+          data: {
+            id: updated.id,
+            ruleId: updated.ruleId || undefined,
+            ruleName: updated.ruleName || undefined,
+            severity: updated.severity as any,
+            title: updated.title,
+            source: updated.source,
+            destination: updated.destination || undefined,
+            status: updated.status,
+            relatedLogsCount: mergedIds.length,
+            suppressedDuplicateCount: updatedEvidence.suppressedDuplicateCount,
+            updatedAt: updated.updatedAt.toISOString(),
+          },
+        });
+        RealtimeService.notifyStatsUpdated();
+
         return updated;
       }
 
@@ -664,6 +685,31 @@ export class DetectionEngine {
           dedupKey: match.dedupKey,
         })
         .returning();
+
+      RealtimeService.publish({
+        id: `evt_alert_new_${newAlert.id}_${Date.now()}`,
+        type: "alert.created",
+        timestamp: new Date().toISOString(),
+        data: {
+          id: newAlert.id,
+          ruleId: newAlert.ruleId || undefined,
+          ruleName: newAlert.ruleName || undefined,
+          severity: newAlert.severity as any,
+          title: newAlert.title,
+          source: newAlert.source,
+          destination: newAlert.destination || undefined,
+          tactic: newAlert.tactic,
+          technique: newAlert.technique || undefined,
+          status: newAlert.status,
+          confidence: newAlert.confidence,
+          description: newAlert.description || undefined,
+          evidence: newAlert.evidence,
+          suggestedNextSteps: newAlert.suggestedNextSteps || undefined,
+          relatedLogIds: Array.isArray(newAlert.relatedLogIds) ? (newAlert.relatedLogIds as number[]) : [],
+          createdAt: newAlert.createdAt.toISOString(),
+        },
+      });
+      RealtimeService.notifyStatsUpdated();
 
       return newAlert;
     } catch (err) {

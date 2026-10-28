@@ -18,6 +18,7 @@ import { requireAuth, requirePermission, optionalAuth } from "../middleware/auth
 import { PERMISSIONS } from "../../shared/auth";
 import { LogNormalizer, type NormalizedLog } from "../services/logNormalizer";
 import { DetectionEngine } from "../services/detectionEngine";
+import { RealtimeService } from "../services/realtimeService";
 
 export const logsRouter = Router();
 
@@ -221,10 +222,32 @@ logsRouter.post("/", requireAuth, requirePermission(PERMISSIONS.INGEST_LOGS), as
     // Evaluate detection engine rules
     const { alerts: generatedAlerts, matches } = await DetectionEngine.evaluateAndAlert(inserted.id, normalized);
 
+    // Publish log.ingested real-time event
+    RealtimeService.publish({
+      id: `evt_log_${inserted.id}_${Date.now()}`,
+      type: "log.ingested",
+      timestamp: new Date().toISOString(),
+      data: {
+        id: inserted.id,
+        timestamp: inserted.timestamp.toISOString(),
+        sourceType: inserted.sourceType,
+        sourceHost: inserted.sourceHost || undefined,
+        sourceIp: inserted.sourceIp || undefined,
+        destinationIp: inserted.destinationIp || undefined,
+        username: inserted.username || undefined,
+        isThreat: inserted.isThreat,
+        threatReason: inserted.threatReason || undefined,
+        logLevel: inserted.logLevel,
+      },
+    });
+    RealtimeService.notifyStatsUpdated();
+
     return res.status(201).json({
       success: true,
       log: inserted,
       alerts: generatedAlerts,
+      alertGenerated: generatedAlerts.length > 0,
+      alert: generatedAlerts.length > 0 ? generatedAlerts[0] : null,
       alertsGenerated: generatedAlerts,
       matchesCount: matches.length,
       detectionMatchesCount: matches.length,
@@ -301,6 +324,20 @@ logsRouter.post("/bulk", requireAuth, requirePermission(PERMISSIONS.INGEST_LOGS)
     // Deduplicate alerts in response
     const uniqueAlerts = Array.from(new Map(allGeneratedAlerts.map((a) => [a.id, a])).values());
 
+    // Publish logs.bulk_ingested real-time event
+    RealtimeService.publish({
+      id: `evt_bulk_${Date.now()}`,
+      type: "logs.bulk_ingested",
+      timestamp: new Date().toISOString(),
+      data: {
+        source: defaultSourceType || "Batch Ingestion",
+        ingestedCount: insertedLogs.length,
+        alertsGeneratedCount: uniqueAlerts.length,
+        timestamp: new Date().toISOString(),
+      },
+    });
+    RealtimeService.notifyStatsUpdated();
+
     return res.status(201).json({
       success: true,
       ingestedCount: insertedLogs.length,
@@ -376,6 +413,21 @@ logsRouter.post(
       }
 
       const uniqueAlerts = Array.from(new Map(allAlerts.map((a) => [a.id, a])).values());
+
+      // Publish logs.bulk_ingested real-time event for file upload
+      RealtimeService.publish({
+        id: `evt_upload_${Date.now()}`,
+        type: "logs.bulk_ingested",
+        timestamp: new Date().toISOString(),
+        data: {
+          source: `File Upload (${req.file.originalname})`,
+          ingestedCount: insertedLogs.length,
+          alertsGeneratedCount: uniqueAlerts.length,
+          fileName: req.file.originalname,
+          timestamp: new Date().toISOString(),
+        },
+      });
+      RealtimeService.notifyStatsUpdated();
 
       return res.status(201).json({
         success: true,

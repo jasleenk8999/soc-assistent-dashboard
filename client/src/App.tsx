@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import { AuthProvider } from "./contexts/AuthContext";
+import { RealtimeProvider } from "./contexts/RealtimeContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
@@ -32,10 +33,12 @@ function App() {
     <ErrorBoundary>
       <ThemeProvider defaultTheme="dark">
         <AuthProvider>
-          <TooltipProvider>
-            <Toaster richColors position="bottom-right" />
-            <Router />
-          </TooltipProvider>
+          <RealtimeProvider>
+            <TooltipProvider>
+              <Toaster richColors position="bottom-right" />
+              <Router />
+            </TooltipProvider>
+          </RealtimeProvider>
         </AuthProvider>
       </ThemeProvider>
     </ErrorBoundary>

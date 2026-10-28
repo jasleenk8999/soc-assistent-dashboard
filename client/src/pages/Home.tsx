@@ -10,6 +10,8 @@ import {
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
+import { useRealtime } from "@/contexts/RealtimeContext";
+import { LiveActivityFeed } from "@/components/LiveActivityFeed";
 import { LoginModal } from "@/components/LoginModal";
 import { LogIngestion } from "@/components/LogIngestion";
 import { AlertDetailModal } from "@/components/AlertDetailModal";
@@ -175,29 +177,53 @@ const tooltipStyle = {
 // ===========================================================================
 function Overview() {
   const { user } = useAuth();
+  const { status: realtimeStatus, subscribe } = useRealtime();
   const [period, setPeriod] = useState("24h");
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const loadStats = async (selectedPeriod: string) => {
+  const loadStats = async (selectedPeriod: string, silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
+      else setIsRefreshing(true);
       setError(null);
       const data = await api.getDashboardStats(selectedPeriod);
       setStats(data);
+      setLastUpdated(new Date());
     } catch (err: any) {
       console.error("Failed to load dashboard stats:", err);
       setError(err.message || "Could not connect to PostgreSQL backend");
-      toast.error("Failed to load live database telemetry");
+      if (!silent) toast.error("Failed to load live database telemetry");
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   };
 
   useEffect(() => {
     loadStats(period);
   }, [period]);
+
+  // Subscribe to real-time events to auto-refresh statistics without page refresh
+  useEffect(() => {
+    const unsubStats = subscribe("dashboard.stats_updated", () => {
+      loadStats(period, true);
+    });
+    const unsubAlert = subscribe("alert.created", () => {
+      loadStats(period, true);
+    });
+    const unsubStatus = subscribe("alert.status_changed", () => {
+      loadStats(period, true);
+    });
+    return () => {
+      unsubStats();
+      unsubAlert();
+      unsubStatus();
+    };
+  }, [period, subscribe]);
 
   const defaultAttackMix = [
     { name: "Credential", value: 37, color: "#e16c5c" },
@@ -225,11 +251,21 @@ function Overview() {
         <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="status-pulse h-2 w-2 rounded-full bg-[#b7f960]" />
+              <span className={`h-2 w-2 rounded-full ${realtimeStatus === 'connected' ? 'status-pulse bg-[#b7f960]' : realtimeStatus === 'reconnecting' ? 'animate-pulse bg-[#d9aa58]' : 'bg-[#e16c5c]'}`} />
               <Meta>Live security posture</Meta>
-              <span className="font-display text-[10px] uppercase tracking-[0.14em] text-[#b7f960]">
-                {error ? "Degraded" : "PostgreSQL Connected"}
+              <span className={`font-display text-[10px] uppercase tracking-[0.14em] ${realtimeStatus === 'connected' ? 'text-[#b7f960]' : realtimeStatus === 'reconnecting' ? 'text-[#f0c97f]' : 'text-[#ff9a8d]'}`}>
+                {realtimeStatus === "connected" ? "Real-time SSE Active" : realtimeStatus === "reconnecting" ? "Reconnecting..." : realtimeStatus === "auth_required" ? "Authentication Required" : "Stream Offline"}
               </span>
+              {isRefreshing && (
+                <span className="flex items-center gap-1 font-display text-[9px] uppercase tracking-wider text-[#6fb6cc]">
+                  <RefreshCw className="h-2.5 w-2.5 animate-spin" /> Syncing
+                </span>
+              )}
+              {lastUpdated && (
+                <span className="font-mono text-[9px] text-slate-500">
+                  Sync: {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </span>
+              )}
               {user && (
                 <span className="rounded border border-[#b7f960]/30 bg-[#b7f960]/10 px-2 py-0.5 font-display text-[9px] uppercase tracking-wider text-[#b7f960]">
                   {user.role} · {user.fullName}
@@ -371,8 +407,13 @@ function Overview() {
         </div>
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(340px,0.7fr)]">
-          <AlertQueue compact />
-          <AIBrief />
+          <div className="space-y-5">
+            <AlertQueue compact />
+            <LiveActivityFeed maxItems={6} />
+          </div>
+          <div className="space-y-5">
+            <AIBrief />
+          </div>
         </div>
       </div>
     </>
@@ -405,16 +446,34 @@ function ChartThreat({ data }: { data: Array<{ time: string; high: number; mediu
 
 function AlertQueue({ compact = false }: { compact?: boolean }) {
   const [, setLocation] = useLocation();
+  const { subscribe } = useRealtime();
   const [items, setItems] = useState<AlertItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadAlerts = (silent = false) => {
+    if (!silent) setLoading(true);
     api
       .getAlerts()
       .then((res) => setItems(res.items))
       .catch((err) => console.error("AlertQueue fetch error:", err))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadAlerts();
   }, []);
+
+  // Listen to live alert events to keep queue updated
+  useEffect(() => {
+    const unsubCreated = subscribe("alert.created", () => loadAlerts(true));
+    const unsubStatus = subscribe("alert.status_changed", () => loadAlerts(true));
+    const unsubUpdated = subscribe("alert.updated", () => loadAlerts(true));
+    return () => {
+      unsubCreated();
+      unsubStatus();
+      unsubUpdated();
+    };
+  }, [subscribe]);
 
   const displayedRows = compact ? items.slice(0, 4) : items;
 
@@ -541,6 +600,7 @@ function AIBrief() {
 // 2. LIVE ALERTS SCREEN (Connected to PostgreSQL Backend)
 // ===========================================================================
 function Alerts() {
+  const { subscribe, status: realtimeStatus } = useRealtime();
   const [filter, setFilter] = useState<Severity | "All">("All");
   const [query, setQuery] = useState("");
   const [alertsList, setAlertsList] = useState<AlertItem[]>([]);
@@ -555,15 +615,15 @@ function Alerts() {
   });
   const [loading, setLoading] = useState(true);
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const res = await api.getAlerts({ severity: filter, search: query });
       setAlertsList(res.items);
       setCounts(res.counts);
     } catch (err: any) {
       console.error("Failed to fetch alerts:", err);
-      toast.error(err.message || "Failed to query alerts from PostgreSQL");
+      if (!silent) toast.error(err.message || "Failed to query alerts from PostgreSQL");
     } finally {
       setLoading(false);
     }
@@ -572,6 +632,24 @@ function Alerts() {
   useEffect(() => {
     fetchAlerts();
   }, [filter, query]);
+
+  // Subscribe to live alert creations and status changes
+  useEffect(() => {
+    const unsubCreated = subscribe("alert.created", () => {
+      fetchAlerts(true);
+    });
+    const unsubStatus = subscribe("alert.status_changed", () => {
+      fetchAlerts(true);
+    });
+    const unsubUpdated = subscribe("alert.updated", () => {
+      fetchAlerts(true);
+    });
+    return () => {
+      unsubCreated();
+      unsubStatus();
+      unsubUpdated();
+    };
+  }, [filter, query, subscribe]);
 
   const handleTriageFirst = async () => {
     const firstOpen = alertsList.find((a) => a.status === "Open");
@@ -1841,6 +1919,7 @@ function SettingsPlaceholder({ title, text, action }: { title: string; text: str
 function Home() {
   const [location, setLocation] = useLocation();
   const { user, isAuthenticated, logout } = useAuth();
+  const { status: realtimeStatus, reconnect } = useRealtime();
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const displayName = [...commandNav, ...workspaceNav].find((item) => item.href === location)?.label ?? "Overview";
 
@@ -1876,10 +1955,14 @@ function Home() {
 
           <div className="mt-auto rounded-xl border border-white/[0.08] bg-[linear-gradient(145deg,rgba(37,47,52,0.72),rgba(19,24,27,0.9))] p-3.5">
             <div className="flex items-center gap-2">
-              <span className="status-pulse h-2 w-2 rounded-full bg-[#b7f960]" />
-              <span className="font-display text-[10px] font-semibold uppercase tracking-[0.13em] text-[#c9f785]">All systems operational</span>
+              <span className={`h-2 w-2 rounded-full ${realtimeStatus === 'connected' ? 'status-pulse bg-[#b7f960]' : realtimeStatus === 'reconnecting' ? 'animate-pulse bg-[#d9aa58]' : 'bg-[#e16c5c]'}`} />
+              <span className={`font-display text-[10px] font-semibold uppercase tracking-[0.13em] ${realtimeStatus === 'connected' ? 'text-[#c9f785]' : realtimeStatus === 'reconnecting' ? 'text-[#f0c97f]' : 'text-[#ff9a8d]'}`}>
+                {realtimeStatus === "connected" ? "Live Stream Active" : realtimeStatus === "reconnecting" ? "Reconnecting Stream" : realtimeStatus === "auth_required" ? "Authentication Required" : "Stream Offline"}
+              </span>
             </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">PostgreSQL online · Telemetry active</p>
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+              {realtimeStatus === "connected" ? "PostgreSQL online · SSE streaming" : "Telemetry offline · Check connection"}
+            </p>
           </div>
 
           {isAuthenticated && user ? (
@@ -1940,6 +2023,17 @@ function Home() {
               <span className="font-medium text-slate-300">{displayName}</span>
             </div>
             <div className="ml-auto flex items-center gap-2 md:gap-3">
+              <div className="hidden sm:flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.025] px-2.5 py-1.5">
+                <span className={`h-2 w-2 rounded-full ${realtimeStatus === 'connected' ? 'status-pulse bg-[#b7f960]' : realtimeStatus === 'reconnecting' ? 'animate-pulse bg-[#d9aa58]' : 'bg-[#e16c5c]'}`} />
+                <span className="font-display text-[10px] font-semibold tracking-wider text-slate-300 uppercase">
+                  {realtimeStatus === "connected" ? "Live Stream" : realtimeStatus === "reconnecting" ? "Reconnecting" : realtimeStatus === "auth_required" ? "Auth Req" : "Offline"}
+                </span>
+                {realtimeStatus !== "connected" && realtimeStatus !== "auth_required" && (
+                  <button onClick={reconnect} className="ml-1 text-[10px] text-[#b7f960] hover:underline">
+                    Retry
+                  </button>
+                )}
+              </div>
               <button onClick={() => toast.info("Global search")} className="hidden items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2 text-[11px] text-slate-500 lg:flex">
                 <Search size={14} />
                 <span>Search intelligence</span>
