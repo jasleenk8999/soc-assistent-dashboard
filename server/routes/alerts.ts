@@ -1,10 +1,11 @@
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, ilike, or, inArray } from "drizzle-orm";
 import { db } from "../db/index";
-import { alerts, logs } from "../db/schema";
+import { alerts, logs, incidentExplanations } from "../db/schema";
 import { requireAuth, requirePermission, optionalAuth } from "../middleware/authMiddleware";
 import { PERMISSIONS } from "../../shared/auth";
 import { RealtimeService } from "../services/realtimeService";
+import { generateExplanation, type AlertContext, type LogContext } from "../services/incidentExplanationService";
 
 export const alertsRouter = Router();
 

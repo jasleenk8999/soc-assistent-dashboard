@@ -263,3 +263,50 @@ export const reports = pgTable(
     index("reports_status_idx").on(table.status),
   ]
 );
+
+// ---------------------------------------------------------------------------
+// 9. Incident Explanations (Phase 5 — AI-Powered Investigation Assistance)
+// ---------------------------------------------------------------------------
+export const incidentExplanations = pgTable(
+  "incident_explanations",
+  {
+    id: serial("id").primaryKey(),
+    alertId: integer("alert_id")
+      .notNull()
+      .references(() => alerts.id, { onDelete: "cascade" }),
+
+    // Generation metadata
+    provider: varchar("provider", { length: 50 }).notNull().default("fallback"), // openai, google, fallback
+    model: varchar("model", { length: 100 }),
+    status: varchar("status", { length: 30 }).notNull().default("pending"), // pending, completed, failed
+    errorMessage: text("error_message"),
+
+    // Immutable evidence snapshot used at generation time
+    evidenceSnapshotLogIds: jsonb("evidence_snapshot_log_ids").default([]),
+    evidenceSnapshotAlertFields: jsonb("evidence_snapshot_alert_fields").default({}),
+    isStale: boolean("is_stale").notNull().default(false),
+
+    // Structured explanation sections
+    executiveSummary: text("executive_summary"),
+    whyItTriggered: text("why_it_triggered"),
+    evidenceNarrative: text("evidence_narrative"),
+    mitreContext: text("mitre_context"),
+    potentialImpact: text("potential_impact"),
+    confidenceAndUncertainty: text("confidence_and_uncertainty"),
+    investigationSteps: text("investigation_steps"),
+    containmentConsiderations: text("containment_considerations"),
+    missingEvidence: text("missing_evidence"),
+
+    // Provenance
+    generatedByUserId: integer("generated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    generatedByUserName: varchar("generated_by_user_name", { length: 100 }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("explanations_alert_id_idx").on(table.alertId),
+    index("explanations_status_idx").on(table.status),
+    index("explanations_created_at_idx").on(table.createdAt),
+  ]
+);

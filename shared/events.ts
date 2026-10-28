@@ -12,6 +12,7 @@ export const SECURITY_EVENT_TYPES = [
   "logs.bulk_ingested",
   "dashboard.stats_updated",
   "system.status_changed",
+  "alert.explanation_updated",
 ] as const;
 
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
@@ -126,6 +127,17 @@ export interface SystemStatusChangedPayload {
   message?: string;
 }
 
+// 10. alert.explanation_updated (AI explanation generated/refreshed)
+export interface AlertExplanationUpdatedPayload {
+  alertId: number;
+  explanationId: number;
+  provider: string;
+  model: string | null;
+  status: "completed" | "failed";
+  generatedAt: string;
+  generatedByUserName: string | null;
+}
+
 // Discriminated Union of Typed Security Events
 export type SecurityEvent =
   | (BaseSecurityEvent<ConnectionEstablishedPayload> & { type: "connection.established" })
@@ -136,4 +148,5 @@ export type SecurityEvent =
   | (BaseSecurityEvent<LogIngestedPayload> & { type: "log.ingested" })
   | (BaseSecurityEvent<LogsBulkIngestedPayload> & { type: "logs.bulk_ingested" })
   | (BaseSecurityEvent<DashboardStatsUpdatedPayload> & { type: "dashboard.stats_updated" })
-  | (BaseSecurityEvent<SystemStatusChangedPayload> & { type: "system.status_changed" });
+  | (BaseSecurityEvent<SystemStatusChangedPayload> & { type: "system.status_changed" })
+  | (BaseSecurityEvent<AlertExplanationUpdatedPayload> & { type: "alert.explanation_updated" });

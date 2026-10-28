@@ -42,6 +42,10 @@ export const PERMISSIONS = {
   ADMIN_USERS: "admin:users",
   EXPORT_REPORTS: "export:reports",
   APPROVE_INCIDENT: "approve:incident",
+
+  // AI Incident Explanation (Phase 5)
+  GENERATE_EXPLANATION: "generate:explanation",
+  READ_EXPLANATION: "read:explanation",
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -64,6 +68,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     PERMISSIONS.UPDATE_CASE_STATUS,
     PERMISSIONS.UPLOAD_MALWARE,
     PERMISSIONS.EXPORT_REPORTS,
+    PERMISSIONS.GENERATE_EXPLANATION,
+    PERMISSIONS.READ_EXPLANATION,
   ],
   "Threat Hunter": [
     PERMISSIONS.READ_DASHBOARD,
@@ -77,6 +83,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     PERMISSIONS.MANAGE_THREAT_INTEL,
     PERMISSIONS.ANALYZE_PCAP,
     PERMISSIONS.UPLOAD_MALWARE,
+    PERMISSIONS.GENERATE_EXPLANATION,
+    PERMISSIONS.READ_EXPLANATION,
   ],
   "Incident Commander": [
     // Full authority across all security actions
@@ -97,6 +105,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     PERMISSIONS.MANAGE_THREAT_INTEL,
     PERMISSIONS.ANALYZE_PCAP,
     PERMISSIONS.UPLOAD_MALWARE,
+    PERMISSIONS.GENERATE_EXPLANATION,
+    PERMISSIONS.READ_EXPLANATION,
   ],
   "Detection Engineer": [
     PERMISSIONS.READ_DASHBOARD,
@@ -110,6 +120,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     PERMISSIONS.INGEST_LOGS,
     PERMISSIONS.MANAGE_DETECTION_RULES,
     PERMISSIONS.ANALYZE_PCAP,
+    PERMISSIONS.READ_EXPLANATION,
   ],
 };
 
